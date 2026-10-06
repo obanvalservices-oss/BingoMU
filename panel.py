@@ -1,20 +1,19 @@
 """
 JewelBingo control panel (Mac + Windows).
 
-Classic tk widgets + safe startup (errors go to panel_error.log and a dialog).
+The bot runs in a SEPARATE process (not a thread). On macOS, mss/pyautogui
+inside a Tk thread crashes Python — subprocess avoids that.
 """
 
 from __future__ import annotations
 
-import io
 import os
+import subprocess
 import sys
 import threading
-import time
 import traceback
 from pathlib import Path
 
-# Must be before tkinter on macOS
 os.environ.setdefault("TK_SILENCE_DEPRECATION", "1")
 
 import tkinter as tk
@@ -26,14 +25,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 ERROR_LOG = ROOT / "panel_error.log"
-
 BG = "#f5f5f5"
 FG = "#111111"
 ACCENT = "#1b6b3a"
 BTN = "#dddddd"
 LOG_BG = "#111111"
 LOG_FG = "#eeeeee"
-
 CAL_PATH = ROOT / "assets" / "calibration" / "default.json"
 
 
@@ -46,20 +43,6 @@ def _log_crash(where: str, exc: BaseException) -> None:
     print(msg, file=sys.stderr)
 
 
-class TextRedirect(io.TextIOBase):
-    def __init__(self, write_fn) -> None:
-        super().__init__()
-        self._write_fn = write_fn
-
-    def write(self, s: str) -> int:
-        if s:
-            self._write_fn(s)
-        return len(s) if s else 0
-
-    def flush(self) -> None:
-        pass
-
-
 class JewelBingoPanel(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -70,9 +53,8 @@ class JewelBingoPanel(tk.Tk):
         except Exception:
             pass
 
-        self._bot = None
-        self._thread = None
-        self._stop_listener = None
+        self._proc: Optional[subprocess.Popen] = None
+        self._reader: Optional[threading.Thread] = None
         self._running = False
         self._cell_vars: list[list[tk.StringVar]] = []
 
@@ -83,7 +65,6 @@ class JewelBingoPanel(tk.Tk):
         self.left_var = tk.IntVar(value=5)
         self.dry_var = tk.BooleanVar(value=False)
 
-        # Build UI first (always visible), then load data
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -91,7 +72,6 @@ class JewelBingoPanel(tk.Tk):
             self._load_pattern_into_grid()
         except Exception as e:
             self._append_log(f"Patron: {e}\n")
-
         try:
             self._refresh_history()
         except Exception as e:
@@ -111,7 +91,6 @@ class JewelBingoPanel(tk.Tk):
         from src.types import JEWEL_NAMES, JEWEL_TYPES
 
         cell_choices = list(JEWEL_TYPES) + ["FREE"]
-
         root = tk.Frame(self, bg=BG, padx=12, pady=10)
         root.pack(fill=tk.BOTH, expand=True)
 
@@ -125,7 +104,6 @@ class JewelBingoPanel(tk.Tk):
         )
         self.status_lbl.pack(side=tk.RIGHT)
 
-        # --- Control ---
         ctrl = tk.LabelFrame(root, text="Control", bg=BG, fg=FG, padx=8, pady=6)
         ctrl.pack(fill=tk.X, pady=6)
 
@@ -177,7 +155,6 @@ class JewelBingoPanel(tk.Tk):
         ).pack(side=tk.LEFT, padx=8)
         tk.Label(r2, text="ESC/F8 = stop", bg=BG, fg="#666666").pack(side=tk.RIGHT)
 
-        # --- Pattern ---
         pat = tk.LabelFrame(
             root, text="Patron TEMPLATE (centro FREE, 4 de cada)", bg=BG, fg=FG,
             padx=8, pady=6,
@@ -194,8 +171,7 @@ class JewelBingoPanel(tk.Tk):
                 if r == 2 and c == 2:
                     v.set("FREE")
                     tk.Label(
-                        grid, text="FREE", width=6, bg="#cccccc", fg=FG,
-                        relief=tk.SUNKEN,
+                        grid, text="FREE", width=6, bg="#cccccc", fg=FG, relief=tk.SUNKEN,
                     ).grid(row=r, column=c, padx=2, pady=2)
                 else:
                     menu = tk.OptionMenu(grid, v, *cell_choices)
@@ -221,19 +197,16 @@ class JewelBingoPanel(tk.Tk):
             side=tk.RIGHT
         )
 
-        # --- History ---
         hist = tk.LabelFrame(root, text="Historial", bg=BG, fg=FG, padx=8, pady=4)
         hist.pack(fill=tk.X, pady=4)
         self.hist_lbl = tk.Label(
-            hist, text="...", bg=BG, fg=FG, justify=tk.LEFT, anchor="w",
-            wraplength=820,
+            hist, text="...", bg=BG, fg=FG, justify=tk.LEFT, anchor="w", wraplength=820,
         )
         self.hist_lbl.pack(fill=tk.X)
-        tk.Button(
-            hist, text="Actualizar", command=self._refresh_history, bg=BTN
-        ).pack(anchor=tk.W, pady=2)
+        tk.Button(hist, text="Actualizar", command=self._refresh_history, bg=BTN).pack(
+            anchor=tk.W, pady=2
+        )
 
-        # --- Log ---
         logf = tk.LabelFrame(root, text="Log", bg=BG, fg=FG, padx=4, pady=4)
         logf.pack(fill=tk.BOTH, expand=True, pady=4)
         self.log = tk.Text(
@@ -245,8 +218,8 @@ class JewelBingoPanel(tk.Tk):
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._append_log(
-            "Panel OK. Remote Desktop al frente -> START.\n"
-            f"Si falla, mira: {ERROR_LOG}\n"
+            "Panel OK. El bot corre en proceso aparte (safe en Mac).\n"
+            "Remote Desktop al frente -> START. ESC/F8 tambien paran.\n"
         )
 
     def _toggle_resume(self) -> None:
@@ -343,9 +316,6 @@ class JewelBingoPanel(tk.Tk):
             return
 
         from src.patterns import save_active_template, validate_template
-        from src.types import Calibration, PlacementMode
-        from src.fsm import BingoBot
-        from src.control import install_kill_hotkey
 
         tmpl = self._pattern_from_grid()
         if self.mode_var.get() == "template":
@@ -357,91 +327,120 @@ class JewelBingoPanel(tk.Tk):
 
         resume = bool(self.resume_var.get())
         left = int(self.left_var.get()) if resume else None
+        mode = self.mode_var.get()
+        cd = int(self.countdown_var.get())
+        max_games = 1 if resume else int(self.max_games_var.get())
+
+        cmd = [
+            sys.executable,
+            "-u",
+            str(ROOT / "main.py"),
+            "--mode",
+            mode,
+            "--countdown",
+            str(cd),
+            "--max-games",
+            str(max_games),
+            "--cal",
+            str(CAL_PATH),
+            "--log-dir",
+            str(ROOT / "logs"),
+        ]
+        if resume:
+            cmd.append("--resume")
+            if left is not None:
+                cmd.extend(["--left", str(left)])
+        if self.dry_var.get():
+            cmd.append("--dry-run")
 
         self._set_running(True)
-        self._append_log(
-            f"\nSTART mode={self.mode_var.get()} resume={resume} left={left}\n"
-        )
+        self._append_log(f"\nSTART {' '.join(cmd[3:])}\n")
 
-        def worker() -> None:
-            old_out, old_err = sys.stdout, sys.stderr
-            sys.stdout = TextRedirect(self._append_log)
-            sys.stderr = TextRedirect(self._append_log)
+        env = os.environ.copy()
+        env["TK_SILENCE_DEPRECATION"] = "1"
+        env["PYTHONUNBUFFERED"] = "1"
+
+        try:
+            self._proc = subprocess.Popen(
+                cmd,
+                cwd=str(ROOT),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except Exception as e:
+            _log_crash("popen", e)
+            messagebox.showerror("No se pudo iniciar", str(e))
+            self._set_running(False)
+            return
+
+        def reader() -> None:
+            assert self._proc is not None and self._proc.stdout is not None
             try:
-                cd = int(self.countdown_var.get())
-                for i in range(cd, 0, -1):
-                    if self._bot and self._bot.controller.stopped:
-                        break
-                    print(f"  {i}...")
-                    time.sleep(1.0)
-                if cd > 0:
-                    print("Listo!")
-
-                cal = Calibration.load(str(CAL_PATH))
-                mode = (
-                    PlacementMode.AUTO
-                    if self.mode_var.get() == "auto"
-                    else PlacementMode.TEMPLATE
-                )
-                self._bot = BingoBot(
-                    calibration=cal,
-                    placement_mode=mode,
-                    dry_run=bool(self.dry_var.get()),
-                    use_mc=True,
-                    n_sims=600,
-                    max_games=1 if resume else int(self.max_games_var.get()),
-                    log_dir=str(ROOT / "logs"),
-                    template_dir=str(ROOT / "assets" / "templates"),
-                    resume=resume,
-                    resume_left=left,
-                    template=tmpl,
-                )
-                self._stop_listener = install_kill_hotkey(
-                    self._bot.controller, keys=("esc", "f8")
-                )
-                self._bot.run()
+                for line in self._proc.stdout:
+                    self._append_log(line)
             except Exception as e:
-                _log_crash("bot_run", e)
-                print(f"ERROR: {e}")
-            finally:
-                if self._stop_listener:
-                    try:
-                        self._stop_listener()
-                    except Exception:
-                        pass
-                    self._stop_listener = None
-                self._bot = None
-                sys.stdout, sys.stderr = old_out, old_err
-                self.after(0, self._on_worker_done)
+                self._append_log(f"[log reader] {e}\n")
 
-        self._thread = threading.Thread(target=worker, daemon=True)
-        self._thread.start()
+        self._reader = threading.Thread(target=reader, daemon=True)
+        self._reader.start()
+        self.after(400, self._poll_proc)
 
-    def _on_worker_done(self) -> None:
+    def _poll_proc(self) -> None:
+        if not self._proc:
+            return
+        code = self._proc.poll()
+        if code is None:
+            self.after(400, self._poll_proc)
+            return
+        self._append_log(f"\nProceso terminado (code={code})\n")
+        self._proc = None
         self._set_running(False)
         try:
             self._refresh_history()
         except Exception:
             pass
-        self._append_log("Fin / STOP\n")
 
     def _stop(self) -> None:
-        if self._bot:
-            self._bot.stop()
-        self._append_log("STOP\n")
+        self._append_log("STOP — cerrando proceso del bot…\n")
+        proc = self._proc
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            self.after(1500, self._force_kill)
+        else:
+            self._set_running(False)
+
+    def _force_kill(self) -> None:
+        proc = self._proc
+        if proc and proc.poll() is None:
+            try:
+                proc.kill()
+                self._append_log("Proceso kill()\n")
+            except Exception:
+                pass
+        if self._running and (not proc or proc.poll() is not None):
+            self._proc = None
+            self._set_running(False)
 
     def _on_close(self) -> None:
-        if self._running and self._bot:
-            self._bot.stop()
+        if self._proc and self._proc.poll() is None:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
         self.destroy()
 
 
 def main() -> int:
     print("Opening JewelBingo Panel…", flush=True)
     try:
-        # Lazy-import heavy deps after announcing
         app = JewelBingoPanel()
-        print("Window created — if you don't see it, check Mission Control / other desktop.", flush=True)
+        print("Window created.", flush=True)
         app.mainloop()
         return 0
     except Exception as e:
