@@ -7,6 +7,7 @@ if [[ ! -d .venv ]]; then
 fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
+export TK_SILENCE_DEPRECATION=1
 # Clear quarantine flags if macOS blocked the app
 xattr -cr . >/dev/null 2>&1 || true
 python panel.py

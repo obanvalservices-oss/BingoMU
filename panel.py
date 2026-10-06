@@ -9,6 +9,7 @@ No Terminal required for day-to-day use:
 from __future__ import annotations
 
 import io
+import os
 import sys
 import threading
 import time
@@ -16,6 +17,9 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, scrolledtext, ttk
 from typing import Optional
+
+# Silence macOS system Tk deprecation banner (panel still works)
+os.environ.setdefault("TK_SILENCE_DEPRECATION", "1")
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
