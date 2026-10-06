@@ -53,6 +53,11 @@ class BingoBot:
         self.capture = ScreenCapture()
         self.controller = Controller(calibration, dry_run=dry_run)
         self.classifier = JewelClassifier(template_dir=template_dir)
+        if not self.classifier.has_templates():
+            print(
+                "WARNING: no hay plantillas B/S/CR/H/L/C.png en assets/templates.\n"
+                "  Recalibra O corre: python tools/capture_jewel_templates.py --delay 8"
+            )
         self.board_reader = BoardReader(calibration, self.classifier)
         self.draw_detector = DrawDetector(calibration, self.classifier)
         self.marked_detector = MarkedCellDetector(calibration)

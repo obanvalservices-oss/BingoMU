@@ -335,9 +335,19 @@ def main() -> int:
         cv2.circle(prev, (x, y), 6, (0, 255, 0), -1)
         cv2.putText(prev, k, (x + 6, y - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
     cv2.imwrite(str(preview_path), prev)
+
+    # Capture jewel panel crops as match templates (much better than color-only)
+    from src.vision.templates import save_jewel_templates_from_frame
+
+    tmpl_dir = ROOT / "assets" / "templates"
+    print("\nGuardando plantillas de joyas (panel derecho)...")
+    saved = save_jewel_templates_from_frame(frame, cal, tmpl_dir)
+    print(f"Templates: {saved}")
+
     print(f"\nSaved calibration → {args.out}")
     print(f"Preview → {preview_path}")
     print("Jewel buttons:", list(cal.jewel_btns.keys()))
+    print("\nIMPORTANTE: las plantillas B/S/CR/H/L/C.png se usan para reconocer el sorteo.")
     return 0
 
 

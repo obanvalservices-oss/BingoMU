@@ -21,6 +21,10 @@ assets/calibration/*.png
 !assets/calibration/color_profiles.json
 !assets/calibration/.gitkeep
 
+# Machine-specific jewel crops (captured during calibrate on Mac/Windows)
+assets/templates/*.png
+!assets/templates/.gitkeep
+
 # Large media / reference dumps (not needed to run the bot)
 *.mp4
 referencia-amigo/
