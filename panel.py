@@ -62,8 +62,9 @@ class JewelBingoPanel(tk.Tk):
         self.countdown_var = tk.IntVar(value=5)
         self.max_games_var = tk.IntVar(value=1)
         self.resume_var = tk.BooleanVar(value=False)
-        self.left_var = tk.IntVar(value=5)
+        self.left_var = tk.IntVar(value=14)  # 14 = partida nueva
         self.dry_var = tk.BooleanVar(value=False)
+        self.left_var.trace_add("write", lambda *_: self._on_left_changed())
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -91,9 +92,12 @@ class JewelBingoPanel(tk.Tk):
         from src.types import JEWEL_NAMES, JEWEL_TYPES
 
         cell_choices = list(JEWEL_TYPES) + ["FREE"]
-        root = tk.Frame(self, bg=BG, padx=12, pady=10)
+        self.geometry("980x760")
+
+        root = tk.Frame(self, bg=BG, padx=12, pady=8)
         root.pack(fill=tk.BOTH, expand=True)
 
+        # —— Header / control ——
         head = tk.Frame(root, bg=BG)
         head.pack(fill=tk.X)
         tk.Label(
@@ -105,7 +109,7 @@ class JewelBingoPanel(tk.Tk):
         self.status_lbl.pack(side=tk.RIGHT)
 
         ctrl = tk.LabelFrame(root, text="Control", bg=BG, fg=FG, padx=8, pady=6)
-        ctrl.pack(fill=tk.X, pady=6)
+        ctrl.pack(fill=tk.X, pady=4)
 
         r1 = tk.Frame(ctrl, bg=BG)
         r1.pack(fill=tk.X)
@@ -132,34 +136,24 @@ class JewelBingoPanel(tk.Tk):
         tk.Spinbox(
             r1, from_=0, to=30, width=4, textvariable=self.countdown_var
         ).pack(side=tk.LEFT)
-        tk.Label(r1, text="Max", bg=BG, fg=FG).pack(side=tk.LEFT, padx=(8, 2))
+        tk.Label(r1, text="Max juegos", bg=BG, fg=FG).pack(side=tk.LEFT, padx=(8, 2))
         tk.Spinbox(
             r1, from_=1, to=100, width=4, textvariable=self.max_games_var
         ).pack(side=tk.LEFT)
-
-        r2 = tk.Frame(ctrl, bg=BG)
-        r2.pack(fill=tk.X, pady=4)
         tk.Checkbutton(
-            r2, text="RESUME", variable=self.resume_var,
-            command=self._toggle_resume, bg=BG, fg=FG, selectcolor=BG,
-            activebackground=BG,
-        ).pack(side=tk.LEFT)
-        tk.Label(r2, text="Quedan", bg=BG, fg=FG).pack(side=tk.LEFT, padx=(8, 2))
-        self.left_spin = tk.Spinbox(
-            r2, from_=0, to=14, width=4, textvariable=self.left_var, state=tk.DISABLED
-        )
-        self.left_spin.pack(side=tk.LEFT)
-        tk.Checkbutton(
-            r2, text="Dry-run", variable=self.dry_var,
+            r1, text="Dry-run", variable=self.dry_var,
             bg=BG, fg=FG, selectcolor=BG, activebackground=BG,
-        ).pack(side=tk.LEFT, padx=8)
-        tk.Label(r2, text="ESC/F8 = stop", bg=BG, fg="#666666").pack(side=tk.RIGHT)
+        ).pack(side=tk.LEFT, padx=10)
+        tk.Label(r1, text="ESC/F8 = stop", bg=BG, fg="#666666").pack(side=tk.RIGHT)
+
+        # —— Middle: pattern | resumen ——
+        mid = tk.Frame(root, bg=BG)
+        mid.pack(fill=tk.X, pady=4)
 
         pat = tk.LabelFrame(
-            root, text="Patron TEMPLATE (centro FREE, 4 de cada)", bg=BG, fg=FG,
-            padx=8, pady=6,
+            mid, text="Patron TEMPLATE", bg=BG, fg=FG, padx=8, pady=6,
         )
-        pat.pack(fill=tk.X, pady=4)
+        pat.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
 
         grid = tk.Frame(pat, bg=BG)
         grid.pack()
@@ -193,24 +187,75 @@ class JewelBingoPanel(tk.Tk):
         legend = " ".join(
             f"{k}={JEWEL_NAMES[k].replace('Jewel of ', '')}" for k in JEWEL_TYPES
         )
-        tk.Label(prow, text=legend, bg=BG, fg="#555555", font=("Arial", 9)).pack(
-            side=tk.RIGHT
-        )
-
-        hist = tk.LabelFrame(root, text="Historial", bg=BG, fg=FG, padx=8, pady=4)
-        hist.pack(fill=tk.X, pady=4)
-        self.hist_lbl = tk.Label(
-            hist, text="...", bg=BG, fg=FG, justify=tk.LEFT, anchor="w", wraplength=820,
-        )
-        self.hist_lbl.pack(fill=tk.X)
-        tk.Button(hist, text="Actualizar", command=self._refresh_history, bg=BTN).pack(
+        tk.Label(prow, text=legend, bg=BG, fg="#555555", font=("Arial", 8)).pack(
             anchor=tk.W, pady=2
         )
 
-        logf = tk.LabelFrame(root, text="Log", bg=BG, fg=FG, padx=4, pady=4)
+        # Resumen lateral — movimientos restantes + stats
+        side = tk.LabelFrame(
+            mid, text="Resumen / desde donde arrancar", bg=BG, fg=FG, padx=10, pady=8,
+        )
+        side.pack(side=tk.RIGHT, fill=tk.Y, padx=(6, 0))
+
+        tk.Label(
+            side, text="Movimientos que QUEDAN", bg=BG, fg=FG,
+            font=("Arial", 11, "bold"),
+        ).pack(anchor=tk.W)
+        tk.Label(
+            side,
+            text="14 = partida nueva\n<14 = resume (sin gastar card)",
+            bg=BG, fg="#555555", justify=tk.LEFT, font=("Arial", 9),
+        ).pack(anchor=tk.W, pady=(0, 4))
+
+        left_row = tk.Frame(side, bg=BG)
+        left_row.pack(anchor=tk.W, pady=4)
+        tk.Button(
+            left_row, text="-", width=3, command=lambda: self._nudge_left(-1), bg=BTN,
+        ).pack(side=tk.LEFT)
+        self.left_spin = tk.Spinbox(
+            left_row, from_=0, to=14, width=4, textvariable=self.left_var,
+            font=("Arial", 16, "bold"), justify=tk.CENTER,
+        )
+        self.left_spin.pack(side=tk.LEFT, padx=6)
+        tk.Button(
+            left_row, text="+", width=3, command=lambda: self._nudge_left(1), bg=BTN,
+        ).pack(side=tk.LEFT)
+
+        quick = tk.Frame(side, bg=BG)
+        quick.pack(anchor=tk.W, pady=2)
+        for n in (14, 10, 7, 5, 3, 1):
+            tk.Button(
+                quick, text=str(n), width=3, bg=BTN,
+                command=lambda v=n: self.left_var.set(v),
+            ).pack(side=tk.LEFT, padx=1)
+
+        self.resume_hint = tk.Label(
+            side, text="", bg=BG, fg=ACCENT, font=("Arial", 10, "bold"),
+            justify=tk.LEFT, wraplength=260,
+        )
+        self.resume_hint.pack(anchor=tk.W, pady=6)
+        self._on_left_changed()
+
+        tk.Label(
+            side, text="Historial de partidas", bg=BG, fg=FG, font=("Arial", 10, "bold"),
+        ).pack(anchor=tk.W, pady=(8, 2))
+        self.hist_lbl = tk.Label(
+            side, text="...", bg=BG, fg=FG, justify=tk.LEFT, anchor="nw",
+            wraplength=260, font=("Arial", 9),
+        )
+        self.hist_lbl.pack(anchor=tk.W, fill=tk.X)
+        tk.Button(
+            side, text="Actualizar resumen", command=self._refresh_history, bg=BTN,
+        ).pack(anchor=tk.W, pady=4)
+
+        # —— Bottom: live log history ——
+        logf = tk.LabelFrame(
+            root, text="Historial de logs (partida en vivo)", bg=BG, fg=FG,
+            padx=4, pady=4,
+        )
         logf.pack(fill=tk.BOTH, expand=True, pady=4)
         self.log = tk.Text(
-            logf, height=12, bg=LOG_BG, fg=LOG_FG, insertbackground=LOG_FG,
+            logf, height=16, bg=LOG_BG, fg=LOG_FG, insertbackground=LOG_FG,
             font=("Courier", 11), wrap=tk.WORD,
         )
         sb = tk.Scrollbar(logf, command=self.log.yview)
@@ -218,14 +263,48 @@ class JewelBingoPanel(tk.Tk):
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._append_log(
-            "Panel OK. El bot corre en proceso aparte (safe en Mac).\n"
-            "Remote Desktop al frente -> START. ESC/F8 tambien paran.\n"
+            "Logs en vivo aqui abajo.\n"
+            "A la derecha: elige cuantos movimientos QUEDAN (ej. 5) y START.\n"
+            "Si pones 14 = partida nueva completa.\n"
         )
 
+    def _nudge_left(self, delta: int) -> None:
+        try:
+            n = int(self.left_var.get())
+        except Exception:
+            n = 14
+        self.left_var.set(max(0, min(14, n + delta)))
+
+    def _on_left_changed(self, *_args) -> None:
+        try:
+            left = int(self.left_var.get())
+        except Exception:
+            return
+        left = max(0, min(14, left))
+        done = 14 - left
+        if left >= 14:
+            self.resume_var.set(False)
+            self.resume_hint.configure(
+                text="Partida NUEVA\n(movimiento 1 de 14)",
+                fg=ACCENT,
+            )
+        else:
+            self.resume_var.set(True)
+            self.resume_hint.configure(
+                text=(
+                    f"RESUME — quedan {left}\n"
+                    f"Arranca en movimiento {done + 1} de 14\n"
+                    f"(ya hechos ~{done})"
+                ),
+                fg="#b71c1c" if left <= 3 else "#e65100",
+            )
+
     def _toggle_resume(self) -> None:
-        self.left_spin.configure(
-            state=tk.NORMAL if self.resume_var.get() else tk.DISABLED
-        )
+        # Kept for compatibility; left spinner drives resume now
+        if self.resume_var.get() and int(self.left_var.get()) >= 14:
+            self.left_var.set(5)
+        elif not self.resume_var.get():
+            self.left_var.set(14)
 
     def _pattern_from_grid(self) -> list[list[str]]:
         return [[self._cell_vars[r][c].get() for c in range(5)] for r in range(5)]
@@ -270,7 +349,12 @@ class JewelBingoPanel(tk.Tk):
             messagebox.showinfo("OK", "Patron valido")
 
     def _refresh_history(self) -> None:
-        from src.history import history_summary, load_learned_priors, rebuild_learned_priors
+        from src.history import (
+            history_summary,
+            load_history,
+            load_learned_priors,
+            rebuild_learned_priors,
+        )
 
         rebuild_learned_priors()
         learned = load_learned_priors()
@@ -281,7 +365,22 @@ class JewelBingoPanel(tk.Tk):
             f"{j}:{overall.get(j, 0):.0%}"
             for j, _ in sorted(overall.items(), key=lambda kv: -kv[1])[:4]
         )
-        self.hist_lbl.configure(text=f"{summary}\nPriors (n={n}): {top}")
+        lines = [summary, f"Priors (n={n}): {top}", ""]
+        games = load_history()[-5:]
+        if games:
+            lines.append("Ultimas partidas:")
+            for g in reversed(games):
+                draws = g.get("draws") or []
+                seq = "→".join(draws[:6])
+                if len(draws) > 6:
+                    seq += "…"
+                sc = g.get("final_score", "?")
+                mode = g.get("placement_mode", "?")
+                hit = "OK1000" if g.get("target_met") else "no"
+                lines.append(f"  [{mode}] {sc} {hit} | {seq}")
+        else:
+            lines.append("Sin partidas guardadas aun.")
+        self.hist_lbl.configure(text="\n".join(lines))
 
     def _append_log(self, text: str) -> None:
         def _do() -> None:
@@ -325,8 +424,9 @@ class JewelBingoPanel(tk.Tk):
                 return
             save_active_template(tmpl, name="panel_active")
 
-        resume = bool(self.resume_var.get())
-        left = int(self.left_var.get()) if resume else None
+        resume = int(self.left_var.get()) < 14
+        self.resume_var.set(resume)
+        left = int(self.left_var.get())
         mode = self.mode_var.get()
         cd = int(self.countdown_var.get())
         max_games = 1 if resume else int(self.max_games_var.get())
@@ -348,13 +448,18 @@ class JewelBingoPanel(tk.Tk):
         ]
         if resume:
             cmd.append("--resume")
-            if left is not None:
-                cmd.extend(["--left", str(left)])
+            cmd.extend(["--left", str(left)])
         if self.dry_var.get():
             cmd.append("--dry-run")
 
         self._set_running(True)
-        self._append_log(f"\nSTART {' '.join(cmd[3:])}\n")
+        if resume:
+            self._append_log(
+                f"\nRESUME — quedan {left} (movimiento {14 - left + 1}/14)\n"
+            )
+        else:
+            self._append_log("\nPartida NUEVA (14 sorteos)\n")
+        self._append_log(f"cmd: {' '.join(cmd[3:])}\n")
 
         env = os.environ.copy()
         env["TK_SILENCE_DEPRECATION"] = "1"
