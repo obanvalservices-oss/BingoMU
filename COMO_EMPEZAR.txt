@@ -1,0 +1,83 @@
+# Jewel Bingo Bot — START HERE (Mac + Windows)
+
+Folder on Desktop: **JewelBingo**
+
+Copy this whole folder to your Mac (Drive / AirDrop / USB).
+Do **not** install on the Windows game PC or local server.
+
+---
+
+## Jewels (right panel, top → bottom)
+
+| Code | Name |
+|------|------|
+| B | Jewel of Bless |
+| S | Jewel of Soul |
+| CR | Jewel of Creation |
+| H | Jewel of Harmony |
+| L | Jewel of Life |
+| C | Jewel of Chaos |
+
+## ChatGPT template (default / recommended)
+
+```
+S  - H  - B  - L  - H
+CR - C  - C  - L  - C
+B  - H  - MU - S  - C
+B  - CR - CR - B  - L
+S  - CR - H  - S  - L
+```
+
+---
+
+## macOS
+
+### Si sale “Apple could not verify… malware”
+macOS bloquea archivos traídos de Windows/Drive. Haz **UNA** de estas:
+
+**A) Más fácil**
+1. Clic derecho en `1-Instalar.command` → **Open** → **Open**
+2. Repite Open en los demás `.command` la primera vez
+
+**B) Quitar el bloqueo de toda la carpeta (Terminal)**
+```bash
+cd ~/Desktop/JewelBingo
+xattr -cr .
+chmod +x *.command install_mac.sh
+./1-Instalar.command
+```
+
+**C) System Settings → Privacy & Security** → abajo “Open Anyway” / “Abrir de todos modos”
+
+---
+
+1. Double-click **`1-Instalar.command`** (o usa B arriba)
+2. Permissions: System Settings → Privacy & Security
+   - Screen Recording → Terminal / Python
+   - Accessibility → Terminal / Python
+3. Open Chrome Remote Desktop → Jewel Bingo (window fixed)
+4. **`2-Calibrar.command`** — click panel + controls + 6 jewels
+5. **`3-Simular.command`** — offline strategy test
+6. **`4-Play-Template.command`** — LIVE with ChatGPT pattern
+7. Optional: **`5-Play-Auto.command`** / **`6-DryRun.command`**
+8. **F8** = stop
+
+---
+
+## Windows (bot PC / Remote Desktop client — not the game PC)
+
+1. Double-click **`1-Install.bat`**
+2. Open Chrome Remote Desktop → Jewel Bingo
+3. **`2-Calibrate.bat`**
+4. **`3-Simulate.bat`**
+5. **`4-Play-Template.bat`** — LIVE with ChatGPT pattern
+6. Optional: **`5-Play-Auto.bat`** / **`6-DryRun.bat`**
+7. **F8** = stop
+
+---
+
+## Tips
+
+- Recalibrate if you move/resize the Remote Desktop window.
+- TEMPLATE places 4 of each jewel manually (select jewel → click cells).
+- AUTO uses the in-game Auto-Place button.

@@ -1,0 +1,8 @@
+{
+  "B":  {"h_ranges": [[140, 170]], "s_min": 60, "v_min": 70, "v_max": 255},
+  "S":  {"h_ranges": [[120, 145]], "s_min": 50, "v_min": 40, "v_max": 255},
+  "CR": {"h_ranges": [[8, 28]], "s_min": 40, "v_min": 40, "v_max": 210},
+  "H":  {"h_ranges": [[0, 179]], "s_min": 0, "s_max": 55, "v_min": 50, "v_max": 180},
+  "L":  {"h_ranges": [[85, 110]], "s_min": 40, "v_min": 80, "v_max": 255},
+  "C":  {"h_ranges": [[18, 40]], "s_min": 70, "v_min": 80, "v_max": 255}
+}

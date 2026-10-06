@@ -1,0 +1,36 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+
+# Runtime / local machine
+logs/*.jsonl
+logs/replay_last.json
+!logs/.gitkeep
+
+# Keep Mac/Windows calibration local (each machine has its own)
+assets/calibration/default.json
+assets/calibration/cal_preview.png
+assets/calibration/_test_cal.json
+assets/calibration/candidates/
+assets/calibration/*.png
+!assets/calibration/color_profiles.json
+!assets/calibration/.gitkeep
+
+# Large media / reference dumps (not needed to run the bot)
+*.mp4
+referencia-amigo/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.command.bak
+
+# Desktop deploy copy noise
+JewelBingo/
