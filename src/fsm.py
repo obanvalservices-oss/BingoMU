@@ -43,13 +43,15 @@ class BingoBot:
         max_games: Optional[int] = None,
         log_dir: str = "logs",
         template_dir: str | None = "assets/templates",
+        resume: bool = False,
     ) -> None:
         self.cal = calibration
         self.placement_mode = placement_mode
         self.dry_run = dry_run
         self.use_mc = use_mc
         self.n_sims = n_sims
-        self.max_games = max_games
+        self.max_games = max_games if max_games is not None else (1 if resume else None)
+        self.resume = resume
         self.capture = ScreenCapture()
         self.controller = Controller(calibration, dry_run=dry_run)
         self.classifier = JewelClassifier(template_dir=template_dir)
@@ -66,6 +68,7 @@ class BingoBot:
         self.state = GameState.IDLE
         self.games_played = 0
         self._active: Optional[GameRecord] = None
+        self._draws_done_offset = 0
 
     def frame(self) -> np.ndarray:
         return self.capture.grab()
@@ -79,11 +82,19 @@ class BingoBot:
             dry_run=self.dry_run,
             use_mc=self.use_mc,
             placement_mode=self.placement_mode.value,
+            resume=self.resume,
         )
         print(f"Placement mode: {self.placement_mode.value.upper()}")
         if self.placement_mode == PlacementMode.TEMPLATE:
             print("ChatGPT template:\n" + format_template())
-        self.state = GameState.PRESS_START
+        if self.resume:
+            print(
+                "\n=== RESUME: juego YA en curso ===\n"
+                "No Start / no colocación / no caja — solo marca sorteos.\n"
+            )
+            self.state = GameState.CALIBRATE  # reuse as resume entry
+        else:
+            self.state = GameState.PRESS_START
         while not self.controller.stopped:
             if self.max_games is not None and self.games_played >= self.max_games:
                 self.logger.log_event("max_games_reached", n=self.games_played)
@@ -101,6 +112,8 @@ class BingoBot:
 
     def _step(self) -> bool:
         s = self.state
+        if s == GameState.CALIBRATE:
+            return self._resume_playing()
         if s == GameState.PRESS_START:
             return self._press_start()
         if s == GameState.PLACE_JEWELS:
@@ -119,6 +132,47 @@ class BingoBot:
         if s == GameState.IDLE:
             self.state = GameState.PRESS_START
             return True
+        return True
+
+    def _resume_playing(self) -> bool:
+        """Join a game already in PLAYING: lock template board + scan blue marks."""
+        self.controller.focus_panel()
+        self.controller.park_mouse()
+        self.controller.wait(0.4)
+        frame = self.frame()
+
+        if self.placement_mode == PlacementMode.TEMPLATE:
+            board = chatgpt_board()
+        else:
+            board = self.board_reader.read(frame)
+
+        # Detect already-marked cells (blue glow)
+        marked = self.marked_detector.detect_marked(frame)
+        for r in range(5):
+            for c in range(5):
+                board.marked[r][c] = marked[r][c]
+        board.marked[2][2] = True
+
+        marked_n = sum(
+            1 for r in range(5) for c in range(5) if board.marked[r][c] and (r, c) != (2, 2)
+        )
+        self._draws_done_offset = marked_n
+        left = max(0, DRAWS_PER_GAME - marked_n)
+
+        print("Board (resume):")
+        for row in board.cells:
+            print(" ", row)
+        print(f"Celdas ya marcadas: {marked_n} → quedan ~{left} sorteos")
+        self.logger.log_event("resume_playing", marked=marked_n, left=left)
+
+        self.marked_detector.set_baseline(frame)
+        self.draw_detector.set_board(board)
+        self.draw_detector.reset()
+        self._active = GameRecord(
+            board=board,
+            placement_mode=self.placement_mode.value,
+        )
+        self.state = GameState.WAIT_DRAW
         return True
 
     def _press_start(self) -> bool:
@@ -225,14 +279,16 @@ class BingoBot:
 
     def _draw_loop(self) -> bool:
         record: GameRecord = self._active  # type: ignore
+        start_i = getattr(self, "_draws_done_offset", 0) or 0
+        start_i = int(max(0, min(start_i, DRAWS_PER_GAME - 1)))
         print(
-            f"\n=== FASE PLAYING: {DRAWS_PER_GAME} sorteos ===\n"
+            f"\n=== FASE PLAYING: sorteos {start_i+1}→{DRAWS_PER_GAME} ===\n"
             "Detección por parpadeo del TABLERO (ROI solo si anima).\n"
             "Verify estricto: NO acepta flip falso B↔CR."
         )
-        completed = 0
+        completed = start_i
         last_jewel: Optional[str] = None
-        for draw_i in range(DRAWS_PER_GAME):
+        for draw_i in range(start_i, DRAWS_PER_GAME):
             if self.controller.stopped:
                 return False
             timeout = 28.0 if draw_i == 0 else 18.0
@@ -546,5 +602,8 @@ class BingoBot:
         print("Get Reward...")
         self.controller.accept_reward()
         self.controller.wait(2.0)
+        if self.resume:
+            print("RESUME: una partida — paro aquí (no gasto otra card).")
+            return False
         self.state = GameState.PRESS_START
         return True

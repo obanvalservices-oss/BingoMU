@@ -46,6 +46,11 @@ def parse_args() -> argparse.Namespace:
         default=5.0,
         help="Seconds to bring Remote Desktop to front before first click",
     )
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="Join a game ALREADY in PLAYING (skip Start/place/box; no new card)",
+    )
     p.add_argument("--show-pattern", action="store_true", help="Print ChatGPT pattern and exit")
     return p.parse_args()
 
@@ -106,11 +111,14 @@ def main() -> int:
         dry_run=args.dry_run,
         use_mc=not args.no_mc,
         n_sims=args.sims,
-        max_games=args.max_games,
+        max_games=args.max_games if args.max_games is not None else (1 if args.resume else None),
         log_dir=str(args.log_dir),
         template_dir=str(ROOT / "assets" / "templates"),
+        resume=args.resume,
     )
     stop_listener = install_kill_hotkey(bot.controller, keys=("esc", "f8"))
+    if args.resume:
+        print("RESUME mode — no new card / no placement.")
     print("Running. ESC = stop (also F8 / Fn+F8). FAILSAFE = mouse to screen corner.")
     pre_start_countdown(args.countdown)
     try:
