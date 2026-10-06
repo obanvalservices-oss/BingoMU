@@ -259,6 +259,21 @@ class BingoBot:
                     return False
                 break
 
+            # Previous mark didn't advance: undo false mark and try another cell
+            stuck_retry = self.draw_detector.last_source == "board_stuck_retry"
+            if stuck_retry and last_jewel == jewel and record.decisions:
+                prev = record.decisions[-1]
+                if prev.jewel == jewel:
+                    pr, pc = prev.chosen
+                    record.board.marked[pr][pc] = False
+                    print(
+                        f"  undo false mark R{pr+1}C{pc+1}; reintentando {jewel}"
+                    )
+                    completed = max(0, completed - 1)
+                    record.draws.pop() if record.draws else None
+                    record.decisions.pop()
+                    self.draw_detector.set_board(record.board)
+
             record.draws.append(jewel)
             cands = record.board.candidates(jewel)
             print(
@@ -317,10 +332,30 @@ class BingoBot:
 
             ok = self._click_and_verify_mark(record, jewel, cell)
             if not ok:
-                print("  SAFETY STOP: clic no verificado (el juego no avanzó).")
-                self.logger.log_event("click_unverified", jewel=jewel, cell=cell)
-                self.state = GameState.ERROR
-                return False
+                # Try other candidates of the same jewel before giving up
+                alternates = [c for c in cands if c != cell]
+                recovered = False
+                for alt in alternates[:3]:
+                    print(f"  reintento con celda alternativa R{alt[0]+1}C{alt[1]+1}...")
+                    if self._click_and_verify_mark(record, jewel, alt):
+                        cell = alt
+                        method = method + "+alt"
+                        record.decisions[-1] = DecisionRecord(
+                            draw_index=draw_i,
+                            jewel=jewel,
+                            chosen=cell,
+                            candidates=cands,
+                            expected_score=e_score,
+                            p_ge_1000=p1000,
+                            method=method,
+                        )
+                        recovered = True
+                        break
+                if not recovered:
+                    print("  SAFETY STOP: clic no verificado (el juego no avanzó).")
+                    self.logger.log_event("click_unverified", jewel=jewel, cell=cell)
+                    self.state = GameState.ERROR
+                    return False
 
             record.board.mark(*cell)
             self.draw_detector.set_board(record.board)
@@ -408,14 +443,15 @@ class BingoBot:
                 f"cellΔ={cell_d:.1f} blue={blue} "
                 f"cStreak={counter_streak} dStreak={draw_streak} cellStreak={cell_streak}"
             )
-            # Require real pixel change on the cell — blue alone was false-positive
+            # MUST see counter or draw icon advance — cell glow alone lied on draw 9
             if counter_streak >= 2 or draw_streak >= 2:
                 try:
                     self.marked_detector.update_cell_baseline(frame, *cell)
                 except Exception:
                     pass
                 return True
-            if cell_streak >= 3 and cell_d >= 2.5 and (blue or cell_d >= 5.0):
+            # Cell change only counts if counter/draw also moved at least a little
+            if cell_streak >= 2 and cell_d >= 8.0 and (cd >= 1.0 or dd >= 1.5):
                 try:
                     self.marked_detector.update_cell_baseline(frame, *cell)
                 except Exception:
@@ -436,7 +472,7 @@ class BingoBot:
         )
         blue = self.marked_detector.cell_marked_blue(frame, *cell)
         print(f"    retry check: counterΔ={cd:.1f} drawΔ={dd:.1f} cellΔ={cell_d:.1f} blue={blue}")
-        return dd >= 2.5 or cd >= 1.5 or (cell_d >= 3.0 and blue)
+        return (dd >= 2.5 or cd >= 1.5) and (cell_d >= 2.0 or blue)
 
     def _wait_for_jewel(
         self,
@@ -444,14 +480,14 @@ class BingoBot:
         board: Optional[BoardState] = None,
         avoid: Optional[str] = None,
     ) -> Optional[str]:
-        """Vote over recent board_blink readings — C vs H often alternate frame-to-frame."""
+        """Vote over board_blink. If stuck on `avoid` >4s, return it for re-click."""
         timeout = timeout if timeout is not None else self.cal.draw_timeout_s
         deadline = time.time() + timeout
         votes: list[str] = []
         last_log = 0.0
+        stuck_since: Optional[float] = None
         while time.time() < deadline and not self.controller.stopped:
             frame = self.frame()
-            # Always push metrics
             self.draw_detector.push(frame)
             jewel = self.draw_detector.detect_from_board_blink(board)
             now = time.time()
@@ -459,8 +495,18 @@ class BingoBot:
                 print(f"  ... {self.draw_detector.debug_snapshot(board)}")
                 last_log = now
             if jewel and avoid and jewel == avoid:
+                if stuck_since is None:
+                    stuck_since = now
+                if now - stuck_since >= 4.0:
+                    print(
+                        f"  same draw still {avoid} after 4s — "
+                        "re-click (el mark anterior no avanzó el juego)"
+                    )
+                    self.draw_detector._last_source = "board_stuck_retry"
+                    return avoid
                 time.sleep(0.1)
                 continue
+            stuck_since = None
             if jewel:
                 votes.append(jewel)
                 votes = votes[-12:]
@@ -471,7 +517,6 @@ class BingoBot:
                     top, n = counts.most_common(1)[0]
                     second_n = counts.most_common(2)[1][1] if len(counts) > 1 else 0
                     scores = self.draw_detector._last_scores or {}
-                    # Tie-break C vs H using live board scores
                     if n >= 3 and n > second_n:
                         self.draw_detector._last_source = "board_vote"
                         print(f"  vote → {top} ({n}/8) scores={scores}")
@@ -483,7 +528,6 @@ class BingoBot:
                         print(f"  vote-tie → {top} scores={scores}")
                         return top
             time.sleep(0.1)
-        # Last chance: take current best score even with soft margin
         if board is not None and self.draw_detector._last_scores:
             ranked = sorted(
                 self.draw_detector._last_scores.items(),
@@ -492,7 +536,7 @@ class BingoBot:
             )
             best_j, best_v = ranked[0]
             second_v = ranked[1][1] if len(ranked) > 1 else 0.0
-            if best_j != avoid and best_v >= 8.0 and best_v >= second_v:
+            if best_v >= 8.0 and best_v >= second_v:
                 print(f"  soft-pick → {best_j} ({best_v:.1f} vs {second_v:.1f})")
                 return best_j
         return None
