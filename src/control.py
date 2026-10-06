@@ -86,6 +86,30 @@ class Controller:
     def click_xy_box(self, x: int, y: int) -> None:
         self.click_xy(x, y)
 
+    def focus_panel(self) -> None:
+        """Click near overlay header so GRD/game has focus before play clicks."""
+        o = self.cal.overlay
+        fx = o.x + o.w // 2
+        fy = o.y + min(18, max(8, o.h // 40))
+        if self.dry_run:
+            print(f"[dry-run] focus panel ({fx},{fy})")
+            return
+        pyautogui.moveTo(fx, fy, duration=0.1)
+        time.sleep(0.08)
+        pyautogui.click(fx, fy)
+        time.sleep(0.35)
+
+    def park_mouse(self) -> None:
+        """Move cursor off the board so it does not cover blinking cells / draw ROI."""
+        o = self.cal.overlay
+        x = max(5, o.x - 40)
+        y = max(5, o.y - 40)
+        if self.dry_run:
+            print(f"[dry-run] park mouse ({x},{y})")
+            return
+        pyautogui.moveTo(x, y, duration=0.15)
+        time.sleep(0.1)
+
     def press_auto(self) -> None:
         self.click_rect(self.cal.auto_btn)
 

@@ -7,7 +7,7 @@ from typing import Optional
 
 import numpy as np
 
-from .capture import ScreenCapture
+from .capture import ScreenCapture, crop
 from .control import Controller
 from .logger import GameLogger
 from .patterns import chatgpt_board, format_template, placement_plan
@@ -27,7 +27,7 @@ from .types import (
 )
 from .vision.board import BoardReader
 from .vision.boxes import find_blue_chest_center
-from .vision.draw import DrawDetector, MarkedCellDetector
+from .vision.draw import DrawDetector, MarkedCellDetector, patch_delta
 from .vision.score import read_total_score
 from .vision.templates import JewelClassifier
 
@@ -206,6 +206,9 @@ class BingoBot:
             self.controller.click_top_left_box()
         print("Caja azul seleccionada — esperando primer sorteo...")
         self.controller.wait(2.5)
+        self.controller.focus_panel()
+        self.controller.park_mouse()
+        self.controller.wait(0.8)
         self._active = GameRecord(
             board=board,
             placement_mode=self.placement_mode.value,
@@ -218,48 +221,74 @@ class BingoBot:
     def _draw_loop(self) -> bool:
         record: GameRecord = self._active  # type: ignore
         print(
-            f"Fase de juego: {DRAWS_PER_GAME} sorteos — "
-            "elige la celda con mayor chance de llegar a 1000+"
+            f"\n=== FASE PLAYING: {DRAWS_PER_GAME} sorteos ===\n"
+            "NO reinicio de colocación hasta terminar (o STOP de seguridad)."
         )
+        completed = 0
         for draw_i in range(DRAWS_PER_GAME):
             if self.controller.stopped:
                 return False
-            # First draw can take longer (chest open animation)
-            timeout = max(self.cal.draw_timeout_s, 18.0 if draw_i == 0 else 12.0)
+            timeout = 25.0 if draw_i == 0 else 16.0
             print(f"\nEsperando sorteo {draw_i+1}/{DRAWS_PER_GAME}...")
+            self.controller.park_mouse()
             jewel = self._wait_for_jewel(timeout=timeout, board=record.board)
             if jewel is None:
-                self.logger.log_event("draw_timeout", draw_index=draw_i)
+                self.logger.log_event("draw_timeout", draw_index=draw_i, completed=completed)
                 print(
-                    "  TIMEOUT: no detecté joya parpadeando. "
-                    "Revisa calibración del grid / draw ROI."
+                    "  TIMEOUT detectando joya sorteada.\n"
+                    f"  debug: {self.draw_detector.debug_snapshot(record.board)}"
                 )
-                print(f"  debug: {self.draw_detector.debug_snapshot(record.board)}")
+                # CRITICAL: do NOT start a new placement cycle on early failure
+                if completed < 10:
+                    print(
+                        "  SAFETY STOP: pocos sorteos completados "
+                        f"({completed}). NO reinicio automático."
+                    )
+                    self.state = GameState.ERROR
+                    return False
+                print("  Casi terminado — cierro ronda.")
                 break
+
             record.draws.append(jewel)
             cands = record.board.candidates(jewel)
             print(
                 f"  Detectado: {jewel} ({JEWEL_NAMES.get(jewel, jewel)}) "
-                f"— {len(cands)} celdas candidatas"
+                f"via {self.draw_detector.last_source} "
+                f"— {len(cands)} candidatas"
             )
             if not cands:
                 self.logger.log_event("no_candidate", jewel=jewel, draw_index=draw_i)
-                print("  Sin candidatas libres — salto este sorteo")
-                self.draw_detector.reset()
-                continue
+                print("  Sin candidatas — SAFETY STOP")
+                self.state = GameState.ERROR
+                return False
 
-            print("  Calculando mejor celda (score / P>=1000)...")
+            # Prefer the blinking cell of that jewel if visible; else Monte Carlo
+            blink_cell = self.draw_detector.most_blinking_cell(record.board, jewel)
+            print("  Calculando mejor celda...")
             cell, e_score, p1000, method = choose_cell(
                 record.board,
                 jewel,
                 draw_index=draw_i,
                 priors=self.priors,
                 use_mc=self.use_mc,
-                n_sims=self.n_sims,
+                n_sims=min(self.n_sims, 400),
             )
+            if blink_cell is not None and blink_cell in cands:
+                # Use blink hint when MC agrees it's a candidate; prefer MC if different
+                # but blink is strong signal of the legal highlight
+                if cell is None or cell == blink_cell:
+                    cell = blink_cell
+                    method = "blink_cell"
+                else:
+                    # Prefer blink cell for reliability of the mark registering
+                    cell = blink_cell
+                    method = f"{method}+blink"
+
             if cell is None:
                 self.logger.log_event("no_candidate", jewel=jewel, draw_index=draw_i)
-                continue
+                self.state = GameState.ERROR
+                return False
+
             record.decisions.append(
                 DecisionRecord(
                     draw_index=draw_i,
@@ -275,17 +304,19 @@ class BingoBot:
                 f"  DRAW {draw_i+1}: {jewel} → R{cell[0]+1}C{cell[1]+1} "
                 f"[{method}] E≈{e_score:.0f} P1000≈{p1000:.0%}"
             )
-            self.controller.click_cell(*cell)
+
+            ok = self._click_and_verify_mark(record, jewel, cell)
+            if not ok:
+                print("  SAFETY STOP: clic no verificado (el juego no avanzó).")
+                self.logger.log_event("click_unverified", jewel=jewel, cell=cell)
+                self.state = GameState.ERROR
+                return False
+
             record.board.mark(*cell)
             self.draw_detector.set_board(record.board)
-            self.controller.wait(0.55)
-            try:
-                self.marked_detector.update_cell_baseline(self.frame(), *cell)
-            except Exception:
-                pass
             self.draw_detector.reset()
-            # brief settle so next blink is distinct
-            self.controller.wait(0.35)
+            completed += 1
+            self.controller.wait(0.45)
 
         frame = self.frame()
         ocr = read_total_score(frame, self.cal.score_roi)
@@ -299,15 +330,74 @@ class BingoBot:
             score=record.final_score,
             target_met=record.target_met,
             games=self.games_played,
+            draws=completed,
             placement_mode=self.placement_mode.value,
         )
         print(
-            f"Game done: score={record.final_score} "
+            f"Game done: draws={completed} score={record.final_score} "
             f"target={'YES' if record.target_met else 'no'}"
         )
         self.priors = JewelPriors.from_logs(str(self.logger.log_dir))
         self.state = GameState.ACCEPT_REWARD
         return True
+
+    def _click_and_verify_mark(
+        self,
+        record: GameRecord,
+        jewel: str,
+        cell: tuple[int, int],
+    ) -> bool:
+        """Click cell, park mouse, verify draw/counter/blue-glow changed."""
+        frame_before = self.frame()
+        before_score = crop(frame_before, self.cal.score_roi).copy()
+        before_draw = crop(frame_before, self.cal.draw_jewel_roi).copy()
+        before_jewel = self.draw_detector.classify_roi_now(frame_before)
+
+        self.controller.focus_panel()
+        self.controller.click_cell(*cell)
+        self.controller.park_mouse()
+        self.controller.wait(0.7)
+
+        counter_streak = 0
+        for attempt in range(12):
+            if self.controller.stopped:
+                return False
+            frame = self.frame()
+            cd = patch_delta(before_score, crop(frame, self.cal.score_roi))
+            dd = patch_delta(before_draw, crop(frame, self.cal.draw_jewel_roi))
+            after_jewel = self.draw_detector.classify_roi_now(frame)
+            blue = self.marked_detector.cell_marked_blue(frame, *cell)
+            draw_changed = (
+                after_jewel is not None
+                and before_jewel is not None
+                and after_jewel != before_jewel
+            ) or dd >= 4.0
+            if cd >= 1.0:
+                counter_streak += 1
+            else:
+                counter_streak = 0
+            print(
+                f"    verify {attempt+1}: counterΔ={cd:.1f} drawΔ={dd:.1f} "
+                f"next={after_jewel} blue_glow={blue} streak={counter_streak}"
+            )
+            if draw_changed or counter_streak >= 2 or blue:
+                try:
+                    self.marked_detector.update_cell_baseline(frame, *cell)
+                except Exception:
+                    pass
+                return True
+            time.sleep(0.22)
+
+        # One retry click
+        print("    reintento de clic...")
+        self.controller.click_cell(*cell)
+        self.controller.park_mouse()
+        self.controller.wait(0.9)
+        frame = self.frame()
+        if self.marked_detector.cell_marked_blue(frame, *cell):
+            return True
+        cd = patch_delta(before_score, crop(frame, self.cal.score_roi))
+        return cd >= 1.5
 
     def _wait_for_jewel(
         self,
@@ -328,20 +418,18 @@ class BingoBot:
                 last_log = now
             if jewel and jewel == last:
                 stable += 1
-                # need more stable frames + confidence
-                if stable >= 4 and self.draw_detector.last_confidence >= 1.2:
-                    return jewel
-                if stable >= 6:
+                if stable >= 3:
                     return jewel
             else:
                 stable = 1 if jewel else 0
                 last = jewel
-            time.sleep(0.10)
-        return last if stable >= 4 else None
+            time.sleep(0.12)
+        return last if stable >= 3 else None
 
     def _accept_reward(self) -> bool:
         self.logger.log_event("accept_reward")
+        print("Get Reward...")
         self.controller.accept_reward()
-        self.controller.wait(1.0)
+        self.controller.wait(2.0)
         self.state = GameState.PRESS_START
         return True
