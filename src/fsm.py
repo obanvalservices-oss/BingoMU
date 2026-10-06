@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import Counter
 from typing import Optional
 
 import numpy as np
@@ -265,7 +266,12 @@ class BingoBot:
             self.logger.log_event("press_auto")
             print("Placing jewels: AUTO-PLACE")
             self.controller.press_auto()
-            self.controller.wait(self.cal.post_auto_wait_s)
+            # Auto-place animation needs longer settle on GRD before read
+            wait_s = max(2.8, float(self.cal.post_auto_wait_s) + 1.2)
+            print(f"  Esperando tablero auto ({wait_s:.1f}s)...")
+            self.controller.wait(wait_s)
+            self.controller.park_mouse()
+            self.controller.wait(0.4)
         else:
             self.logger.log_event("place_template", pattern="chatgpt")
             print("Placing jewels: TEMPLATE (ChatGPT pattern) — slow/GRD-safe")
@@ -317,7 +323,16 @@ class BingoBot:
             except Exception:
                 pass
         else:
-            board = self.board_reader.read(frame)
+            board, soft_known = self._read_auto_board_robust()
+            if soft_known < 10:
+                print(
+                    f"  ERROR: lectura AUTO muy incierta (solo ~{soft_known}/24 "
+                    "celdas claras).\n"
+                    "  SAFETY STOP — usa TEMPLATE o recalibra templates/grid."
+                )
+                self.logger.log_event("auto_board_uncertain", soft_known=soft_known)
+                self.state = GameState.ERROR
+                return False
 
         self.marked_detector.set_baseline(frame)
         self.draw_detector.reset()
@@ -354,6 +369,28 @@ class BingoBot:
         self.draw_detector.reset()
         self.state = GameState.WAIT_DRAW
         return True
+
+    def _read_auto_board_robust(self) -> tuple:
+        """Multi-frame score + force 4-of-each assignment (AUTO boards)."""
+        print("Leyendo tablero AUTO (multi-frame + 4 de cada)...")
+        frames: list = []
+        for _ in range(6):
+            if self.controller.stopped:
+                break
+            self.controller.park_mouse()
+            frames.append(self.frame())
+            self.controller.wait(0.22)
+        board, soft_known = self.board_reader.read_auto(frames)
+        labeled = self.board_reader.labeled_count(board)
+        print(f"  soft-known≈{soft_known}/24 → assigned {labeled}/24 (4× cada joya)")
+        flat = [
+            board.cells[r][c]
+            for r in range(5)
+            for c in range(5)
+            if (r, c) != (2, 2)
+        ]
+        print(f"  conteo: {dict(Counter(flat))}")
+        return board, soft_known
 
     def _draw_loop(self) -> bool:
         record: GameRecord = self._active  # type: ignore

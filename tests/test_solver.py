@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -122,6 +123,37 @@ class TestSolver(unittest.TestCase):
     def test_target_constant(self):
         self.assertEqual(TARGET_SCORE, 1000)
         self.assertEqual(len(JEWEL_TYPES), 6)
+
+
+class TestAutoBoardAssign(unittest.TestCase):
+    def test_assign_four_each(self):
+        from src.vision.board import assign_four_each
+        from src.types import JEWEL_TYPES, CENTER
+
+        # Synthetic: each cell prefers its ChatGPT template jewel
+        from src.types import TEMPLATE_CHATGPT
+
+        grid = [[{j: 0.0 for j in JEWEL_TYPES} for _ in range(5)] for _ in range(5)]
+        for r in range(5):
+            for c in range(5):
+                if (r, c) == CENTER:
+                    continue
+                j = TEMPLATE_CHATGPT[r][c]
+                grid[r][c][j] = 1.0
+        board = assign_four_each(grid)
+        counts = Counter(
+            board.cells[r][c]
+            for r in range(5)
+            for c in range(5)
+            if (r, c) != CENTER
+        )
+        for j in JEWEL_TYPES:
+            self.assertEqual(counts[j], 4, j)
+        for r in range(5):
+            for c in range(5):
+                if (r, c) == CENTER:
+                    continue
+                self.assertEqual(board.cells[r][c], TEMPLATE_CHATGPT[r][c])
 
 
 class TestPriors(unittest.TestCase):
