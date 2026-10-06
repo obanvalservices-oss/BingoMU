@@ -113,10 +113,11 @@ class TestSolver(unittest.TestCase):
         self.assertNotEqual(cell, (0, 1))
 
     def test_center_first_life_prefers_diagonal(self):
-        """Only L on center lines is R5C5 (main diag) — must pick it."""
+        """L center-line cells are anti-diag R2C4 and main-diag R5C5 — never peripheral."""
         b = chatgpt_board()
         cell, _, _ = choose_heuristic(b, "L")
-        self.assertEqual(cell, (4, 4))
+        self.assertIn(cell, {(1, 3), (4, 4)})  # center lines only
+        self.assertNotIn(cell, {(0, 3), (3, 4)})  # peripheral L
 
     def test_target_constant(self):
         self.assertEqual(TARGET_SCORE, 1000)
