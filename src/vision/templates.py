@@ -212,13 +212,50 @@ class JewelClassifier:
         return best_color
 
     def classify_draw_roi(self, roi_bgr: np.ndarray) -> Optional[str]:
-        """Draw icon: prefer templates with slightly looser threshold."""
+        """Draw icon: prefer templates; disambiguate Chaos(C) vs Creation(CR)."""
         if roi_bgr is None or roi_bgr.size == 0:
             return None
         if self.template_feats:
             label, score, margin = self.match_templates(roi_bgr)
-            if label and score >= 0.38 and margin >= 0.04:
-                return label
+            if label and score >= 0.38:
+                # Chaos vs Creation are the frequent confusion pair
+                if label in ("C", "CR") and self.template_feats.get("C") and self.template_feats.get("CR"):
+                    c_lab, c_sc, _ = self._score_one(roi_bgr, "C")
+                    cr_lab, cr_sc, _ = self._score_one(roi_bgr, "CR")
+                    # Yellow/bright → Chaos; brown/darker → Creation
+                    hsv = cv2.cvtColor(
+                        cv2.resize(roi_bgr, (40, 40)), cv2.COLOR_BGR2HSV
+                    )
+                    mean_v = float(hsv[:, :, 2].mean())
+                    mean_s = float(hsv[:, :, 1].mean())
+                    if abs(c_sc - cr_sc) < 0.12:
+                        if mean_v >= 140 and mean_s >= 80:
+                            label, score = "C", c_sc
+                        elif mean_v < 130:
+                            label, score = "CR", cr_sc
+                        elif c_sc >= cr_sc:
+                            label, score = "C", c_sc
+                        else:
+                            label, score = "CR", cr_sc
+                if score >= 0.38 and (margin >= 0.04 or label in ("C", "CR")):
+                    return label
             if label and score >= 0.55:
                 return label
         return self.classify(roi_bgr)
+
+    def _score_one(self, bgr: np.ndarray, name: str) -> tuple[Optional[str], float, float]:
+        feats = self.template_feats.get(name)
+        if not feats:
+            return None, 0.0, 0.0
+        h, g = jewel_features(bgr)
+        vals = []
+        for h2, g2 in feats:
+            hc = float(cv2.compareHist(h, h2, cv2.HISTCMP_CORREL))
+            if np.isnan(hc):
+                hc = 0.0
+            g2_r = g2 if g2.shape == g.shape else cv2.resize(g2, (g.shape[1], g.shape[0]))
+            res = cv2.matchTemplate(g, g2_r, cv2.TM_CCOEFF_NORMED)
+            gc = float(res[0, 0]) if res.size else -1.0
+            vals.append(0.65 * hc + 0.35 * gc)
+        sc = max(vals) if vals else 0.0
+        return name, sc, 0.0

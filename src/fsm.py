@@ -452,18 +452,23 @@ class BingoBot:
                 last_log = now
             if jewel and avoid and jewel == avoid:
                 # Still showing previous jewel — wait for next draw
-                stable = 0
-                last = None
-                time.sleep(0.12)
-                continue
+                # BUT if board shows a DIFFERENT jewel flashing, take that
+                board_only = self.draw_detector.detect_from_board_blink(board)
+                if board_only and board_only != avoid:
+                    jewel = board_only
+                else:
+                    stable = 0
+                    last = None
+                    time.sleep(0.12)
+                    continue
             if jewel and jewel == last:
                 stable += 1
-                # Need board activity or ROI blink — reject static false labels
-                blink = self.draw_detector.blink_score()
                 src = self.draw_detector.last_source or ""
-                if stable >= 3 and ("board" in src or blink >= 3.0):
+                # Prefer board_blink strongly; never accept static ROI alone
+                if "board" in src and stable >= 2:
                     return jewel
-                if stable >= 5 and blink >= 2.0:
+                blink = self.draw_detector.blink_score()
+                if stable >= 4 and blink >= 5.0 and "roi" in src:
                     return jewel
             else:
                 stable = 1 if jewel else 0

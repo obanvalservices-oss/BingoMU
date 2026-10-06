@@ -1,4 +1,4 @@
-"""Detect drawn jewel (ROI-first, board-blink as support) and marked cells."""
+"""Detect drawn jewel primarily via board-cell blink (matching cells flash)."""
 
 from __future__ import annotations
 
@@ -16,25 +16,29 @@ from .templates import JewelClassifier
 
 class DrawDetector:
     """
-    During PLAYING, identify the currently drawn jewel.
+    Identify the currently drawn jewel.
 
-    Primary: classify calibrated draw_jewel_roi (like friend's portable bot).
-    Support: board-cell blink outliers mapped through known board layout.
+    PRIMARY: unmarked board cells of the drawn type flash/pulse — measure
+    brightness + blue-glow activity per cell and map to jewel codes via the
+    known board layout (TEMPLATE). This avoids CR↔C ROI misreads.
+
+    SECONDARY: draw ROI templates, only if the ROI is clearly animating.
     """
 
     def __init__(
         self,
         calibration: Calibration,
         classifier: Optional[JewelClassifier] = None,
-        history: int = 12,
-        blink_threshold: float = 10.0,
-        cell_blink_threshold: float = 6.0,
-        margin_ratio: float = 1.20,
+        history: int = 14,
+        blink_threshold: float = 8.0,
+        cell_blink_threshold: float = 3.5,
+        margin_ratio: float = 1.15,
     ) -> None:
         self.cal = calibration
         self.classifier = classifier or JewelClassifier(min_score=0.04)
         self.history: deque[np.ndarray] = deque(maxlen=history)
-        self.cell_means: deque[np.ndarray] = deque(maxlen=history)
+        self.cell_bright: deque[np.ndarray] = deque(maxlen=history)
+        self.cell_blue: deque[np.ndarray] = deque(maxlen=history)
         self.roi_labels: deque[str] = deque(maxlen=8)
         self.blink_threshold = blink_threshold
         self.cell_blink_threshold = cell_blink_threshold
@@ -43,13 +47,16 @@ class DrawDetector:
         self._board: Optional[BoardState] = None
         self._last_conf: float = 0.0
         self._last_source: str = ""
+        self._last_scores: dict[str, float] = {}
 
     def reset(self) -> None:
         self.history.clear()
-        self.cell_means.clear()
+        self.cell_bright.clear()
+        self.cell_blue.clear()
         self.roi_labels.clear()
         self._last_conf = 0.0
         self._last_source = ""
+        self._last_scores = {}
 
     def set_board(self, board: BoardState) -> None:
         self._board = board
@@ -62,6 +69,35 @@ class DrawDetector:
     def last_source(self) -> str:
         return self._last_source
 
+    def _cell_metrics(self, frame: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        bright = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+        blue = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                patch = crop(frame, self._cells[r][c])
+                if patch.size == 0:
+                    continue
+                gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+                bright[r, c] = float(gray.mean())
+                hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+                # highlight / glow (cyan-blue) often used when a cell is selectable
+                mask = cv2.inRange(
+                    hsv,
+                    np.array([85, 40, 80], dtype=np.uint8),
+                    np.array([140, 255, 255], dtype=np.uint8),
+                )
+                # also bright yellow-white flash
+                bright_mask = cv2.inRange(
+                    hsv,
+                    np.array([0, 0, 180], dtype=np.uint8),
+                    np.array([179, 80, 255], dtype=np.uint8),
+                )
+                total = float(patch.shape[0] * patch.shape[1] or 1)
+                blue[r, c] = (
+                    cv2.countNonZero(mask) + 0.5 * cv2.countNonZero(bright_mask)
+                ) / total
+        return bright, blue
+
     def push(self, frame: np.ndarray) -> None:
         roi = crop(frame, self.cal.draw_jewel_roi)
         if roi.size > 0:
@@ -71,14 +107,9 @@ class DrawDetector:
             if label and label != "FREE" and label in JEWEL_TYPES:
                 self.roi_labels.append(label)
 
-        means = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
-        for r in range(BOARD_SIZE):
-            for c in range(BOARD_SIZE):
-                patch = crop(frame, self._cells[r][c])
-                if patch.size == 0:
-                    continue
-                means[r, c] = float(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY).mean())
-        self.cell_means.append(means)
+        bright, blue = self._cell_metrics(frame)
+        self.cell_bright.append(bright)
+        self.cell_blue.append(blue)
 
     def blink_score(self) -> float:
         if len(self.history) < 3:
@@ -102,34 +133,50 @@ class DrawDetector:
         counts = Counter(recent)
         jewel, n = counts.most_common(1)[0]
         if n >= min_votes and len(set(recent)) == 1:
-            self._last_conf = 2.0
-            self._last_source = "roi_stable"
             return jewel
         if n >= max(2, min_votes - 1):
-            self._last_conf = 1.3
-            self._last_source = "roi_majority"
             return jewel
         return None
 
+    def _activity_map(self) -> Optional[np.ndarray]:
+        """Per-cell activity = brightness range + blue-glow range over recent frames."""
+        if len(self.cell_bright) < 5:
+            return None
+        bstack = np.stack(list(self.cell_bright), axis=0)
+        blstack = np.stack(list(self.cell_blue), axis=0)
+        bright_range = bstack.max(axis=0) - bstack.min(axis=0)
+        blue_range = blstack.max(axis=0) - blstack.min(axis=0)
+        blue_peak = blstack.max(axis=0)
+        # Weighted: glow flash matters most for "titilando"
+        return bright_range + 40.0 * blue_range + 25.0 * blue_peak
+
     def _jewel_blink_scores(self, board: BoardState) -> dict[str, float]:
-        stack = np.stack(list(self.cell_means), axis=0)
-        std = stack.std(axis=0)
+        act = self._activity_map()
         scores: dict[str, float] = {j: 0.0 for j in JEWEL_TYPES}
-        for r in range(BOARD_SIZE):
-            for c in range(BOARD_SIZE):
-                if board.marked[r][c]:
-                    continue
-                jewel = board.cells[r][c]
-                if jewel not in scores:
-                    continue
-                scores[jewel] = max(scores[jewel], float(std[r, c]))
+        if act is None:
+            return scores
+        # For each jewel type, use top-2 cell activities (several cells flash together)
+        for j in JEWEL_TYPES:
+            vals = []
+            for r in range(BOARD_SIZE):
+                for c in range(BOARD_SIZE):
+                    if board.marked[r][c]:
+                        continue
+                    if board.cells[r][c] != j:
+                        continue
+                    vals.append(float(act[r, c]))
+            if not vals:
+                continue
+            vals.sort(reverse=True)
+            scores[j] = vals[0] + (0.5 * vals[1] if len(vals) > 1 else 0.0)
         return scores
 
     def detect_from_board_blink(self, board: Optional[BoardState] = None) -> Optional[str]:
         b = board or self._board
-        if b is None or len(self.cell_means) < 5:
+        if b is None or len(self.cell_bright) < 5:
             return None
         scores = self._jewel_blink_scores(b)
+        self._last_scores = dict(scores)
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         best_j, best_v = ranked[0]
         second_v = ranked[1][1] if len(ranked) > 1 else 0.0
@@ -137,25 +184,23 @@ class DrawDetector:
             return None
         if second_v > 0 and best_v < second_v * self.margin_ratio:
             return None
-        self._last_conf = best_v / max(second_v, 1.0)
+        self._last_conf = best_v / max(second_v, 0.5)
         self._last_source = "board_blink"
         return best_j
 
     def most_blinking_cell(
         self, board: BoardState, jewel: str
     ) -> Optional[tuple[int, int]]:
-        """Among unmarked candidates of `jewel`, return the cell blinking hardest."""
-        if len(self.cell_means) < 4:
+        act = self._activity_map()
+        if act is None:
             return None
-        stack = np.stack(list(self.cell_means), axis=0)
-        std = stack.std(axis=0)
         best: Optional[tuple[int, int]] = None
         best_v = -1.0
         for r in range(BOARD_SIZE):
             for c in range(BOARD_SIZE):
                 if board.marked[r][c] or board.cells[r][c] != jewel:
                     continue
-                v = float(std[r, c])
+                v = float(act[r, c])
                 if v > best_v:
                     best_v = v
                     best = (r, c)
@@ -163,45 +208,48 @@ class DrawDetector:
 
     def detect(self, frame: np.ndarray, board: Optional[BoardState] = None) -> Optional[str]:
         self.push(frame)
-        blink = self.blink_score()
         board_j = self.detect_from_board_blink(board)
-        roi_j = self.stable_roi_vote(min_votes=4)
-
-        # Prefer BOARD blink: drawn jewels light up matching cells on the grid.
-        # ROI-only with blink≈0 was falsely flipping B↔CR in logs.
-        if board_j and self._last_conf >= 1.25:
-            return board_j
-
-        # ROI only if the draw icon is actually animating
-        if roi_j and blink >= max(3.0, self.blink_threshold * 0.35):
-            if board_j and board_j != roi_j:
-                # disagree → trust board blink if present
-                if self._last_source == "board_blink":
-                    return board_j
-            self._last_source = "roi_blink"
-            self._last_conf = max(self._last_conf, blink / 5.0)
-            return roi_j
-
         if board_j:
             return board_j
+
+        # ROI is unreliable (CR vs C confusion) — only use if strongly animating
+        blink = self.blink_score()
+        roi_j = self.stable_roi_vote(min_votes=4)
+        if roi_j and blink >= 5.0:
+            # Disambiguate Chaos vs Creation using board activity if close
+            scores = self._last_scores
+            if roi_j in ("C", "CR") and scores:
+                c_sc = scores.get("C", 0.0)
+                cr_sc = scores.get("CR", 0.0)
+                if c_sc > cr_sc * 1.1 and c_sc >= self.cell_blink_threshold * 0.7:
+                    self._last_source = "roi+board_C"
+                    self._last_conf = 1.5
+                    return "C"
+                if cr_sc > c_sc * 1.1 and cr_sc >= self.cell_blink_threshold * 0.7:
+                    self._last_source = "roi+board_CR"
+                    self._last_conf = 1.5
+                    return "CR"
+            self._last_source = "roi_blink"
+            self._last_conf = blink / 5.0
+            return roi_j
         return None
 
     def debug_snapshot(self, board: Optional[BoardState] = None) -> str:
         b = board or self._board
-        parts = [
-            f"roi_blink={self.blink_score():.1f}",
-            f"roi_vote={self.stable_roi_vote(2)}",
-            f"board={self.detect_from_board_blink(b)}",
-            f"src={self._last_source}",
-            f"conf={self._last_conf:.2f}",
-        ]
-        if self.roi_labels:
-            parts.append(f"roi_hist={list(self.roi_labels)[-4:]}")
-        return " | ".join(parts)
+        board_j = self.detect_from_board_blink(b)
+        scores = self._last_scores or (self._jewel_blink_scores(b) if b else {})
+        tip = ", ".join(
+            f"{j}={scores.get(j, 0):.1f}"
+            for j, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:4]
+        )
+        return (
+            f"roi_blink={self.blink_score():.1f} | roi_vote={self.stable_roi_vote(3)} | "
+            f"board={board_j} | src={self._last_source} | conf={self._last_conf:.2f} | "
+            f"board_scores=[{tip}]"
+        )
 
 
 def patch_delta(a: np.ndarray, b: np.ndarray) -> float:
-    """Mean abs diff between two BGR patches (resized to match)."""
     if a is None or b is None or a.size == 0 or b.size == 0:
         return 0.0
     if a.shape != b.shape:
@@ -212,8 +260,6 @@ def patch_delta(a: np.ndarray, b: np.ndarray) -> float:
 
 
 class MarkedCellDetector:
-    """Track which board cells become marked after clicks via frame differencing."""
-
     def __init__(self, calibration: Calibration, diff_threshold: float = 25.0) -> None:
         self.cal = calibration
         self.diff_threshold = diff_threshold
@@ -236,25 +282,17 @@ class MarkedCellDetector:
             for c in range(BOARD_SIZE):
                 if (r, c) == CENTER:
                     continue
-                patch = crop(frame, self._cells[r][c])
-                hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
-                blue = cv2.inRange(
-                    hsv,
-                    np.array([95, 60, 80], dtype=np.uint8),
-                    np.array([130, 255, 255], dtype=np.uint8),
-                )
-                ratio = cv2.countNonZero(blue) / float(patch.shape[0] * patch.shape[1] or 1)
-                if ratio >= 0.12:
+                if self.cell_marked_blue(frame, r, c):
                     marked[r][c] = True
                     continue
                 if self._baseline is None:
                     continue
+                patch = crop(frame, self._cells[r][c])
                 gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY).astype(np.float32)
                 base = self._baseline[r][c]
                 if gray.shape != base.shape:
                     gray = cv2.resize(gray, (base.shape[1], base.shape[0]))
-                diff = float(np.mean(np.abs(gray - base)))
-                marked[r][c] = diff >= self.diff_threshold
+                marked[r][c] = float(np.mean(np.abs(gray - base))) >= self.diff_threshold
         return marked
 
     def cell_marked_blue(self, frame: np.ndarray, row: int, col: int) -> bool:
