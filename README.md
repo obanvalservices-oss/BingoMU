@@ -2,9 +2,27 @@
 
 Autonomous **Jewel Bingo** bot for MU Online via **Chrome Remote Desktop**.
 
+Repo: https://github.com/obanvalservices-oss/BingoMU
+
 - Runs on **Mac or Windows** (the Remote Desktop *client*).
 - Do **not** install on the game PC.
 - Placement modes: **TEMPLATE** (ChatGPT pattern, default) or **AUTO**.
+
+## Clone (recommended sync)
+
+```bash
+git clone https://github.com/obanvalservices-oss/BingoMU.git
+cd BingoMU
+```
+
+Then install with the launcher for your OS (below). On later updates:
+
+```bash
+cd BingoMU
+git pull
+```
+
+Keep your local `assets/calibration/default.json` (it is gitignored).
 
 ## Jewels (right panel, top → bottom)
 
@@ -31,33 +49,33 @@ S  | CR | H  | S  | L
 
 ### Mac
 ```bash
-cd JewelBingo
+cd BingoMU   # or JewelBingo if using the Desktop package
 chmod +x *.command install_mac.sh
 ./1-Instalar.command
 ```
 
 ### Windows
 ```bat
-cd JewelBingo
+cd BingoMU
 1-Install.bat
 ```
 
 ## Usage
 
 1. Open Chrome Remote Desktop → Jewel Bingo visible, window fixed.
-2. **2-Calibrate** — guided clicks (panel, grid, Auto, boxes, 6 jewels…).
+2. **2-Calibrate** — guided clicks (panel, grid, Auto, boxes, 6 jewels…). Use `+`/`-` to zoom.
 3. **3-Simulate** — offline solver using the ChatGPT board.
 4. **4-Play-Template** — place ChatGPT pattern and play (recommended).
 5. **5-Play-Auto** — use in-game Auto-Place.
 6. **6-DryRun** — one dry-run game.
-7. **F8** = stop. Mouse to screen corner = failsafe.
+7. **Esc** / **Ctrl+C** = stop. Mouse to screen corner = failsafe.
 
 ## CLI
 
 ```bash
-python main.py --mode template --max-games 5
+python main.py --mode template --max-games 5 --countdown 5
 python main.py --mode auto --dry-run --max-games 1
-python tools/calibrate_wizard.py
+python tools/calibrate_wizard.py --delay 8
 python tools/simulate_offline.py --template --games 20
 python main.py --show-pattern
 ```

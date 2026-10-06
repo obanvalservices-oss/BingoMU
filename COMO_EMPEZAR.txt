@@ -1,9 +1,26 @@
 # Jewel Bingo Bot — START HERE (Mac + Windows)
 
-Folder on Desktop: **JewelBingo**
+Repo: https://github.com/obanvalservices-oss/BingoMU
 
-Copy this whole folder to your Mac (Drive / AirDrop / USB).
 Do **not** install on the Windows game PC or local server.
+
+---
+
+## Sync con GitHub (recomendado)
+
+### Primera vez (Mac o Windows)
+```bash
+git clone https://github.com/obanvalservices-oss/BingoMU.git
+cd BingoMU
+```
+
+### Actualizaciones
+```bash
+cd BingoMU
+git pull
+```
+
+La calibración (`assets/calibration/default.json`) es local y no se sube al repo.
 
 ---
 
@@ -33,46 +50,37 @@ S  - CR - H  - S  - L
 ## macOS
 
 ### Si sale “Apple could not verify… malware”
-macOS bloquea archivos traídos de Windows/Drive. Haz **UNA** de estas:
-
-**A) Más fácil**
-1. Clic derecho en `1-Instalar.command` → **Open** → **Open**
-2. Repite Open en los demás `.command` la primera vez
-
-**B) Quitar el bloqueo de toda la carpeta (Terminal)**
 ```bash
-cd ~/Desktop/JewelBingo
+cd ~/Desktop/BingoMU   # o la carpeta donde clonaste
 xattr -cr .
 chmod +x *.command install_mac.sh
 ./1-Instalar.command
 ```
 
-**C) System Settings → Privacy & Security** → abajo “Open Anyway” / “Abrir de todos modos”
+O: clic derecho → **Open** → **Open**.
 
----
-
-1. Double-click **`1-Instalar.command`** (o usa B arriba)
+1. `./1-Instalar.command`
 2. Permissions: System Settings → Privacy & Security
    - Screen Recording → Terminal / Python
    - Accessibility → Terminal / Python
 3. Open Chrome Remote Desktop → Jewel Bingo (window fixed)
-4. **`2-Calibrar.command`** — click panel + controls + 6 jewels
-5. **`3-Simular.command`** — offline strategy test
-6. **`4-Play-Template.command`** — LIVE with ChatGPT pattern
-7. Optional: **`5-Play-Auto.command`** / **`6-DryRun.command`**
-8. **F8** = stop
+4. `./2-Calibrar.command` — click panel + controls + 6 jewels (+/- = zoom)
+5. `./3-Simular.command` — offline test
+6. `./4-Play-Template.command` — LIVE with ChatGPT pattern
+7. Optional: `./5-Play-Auto.command` / `./6-DryRun.command`
+8. **Ctrl+C** or **Esc** = stop
 
 ---
 
 ## Windows (bot PC / Remote Desktop client — not the game PC)
 
-1. Double-click **`1-Install.bat`**
+1. `1-Install.bat`
 2. Open Chrome Remote Desktop → Jewel Bingo
-3. **`2-Calibrate.bat`**
-4. **`3-Simulate.bat`**
-5. **`4-Play-Template.bat`** — LIVE with ChatGPT pattern
-6. Optional: **`5-Play-Auto.bat`** / **`6-DryRun.bat`**
-7. **F8** = stop
+3. `2-Calibrate.bat`
+4. `3-Simulate.bat`
+5. `4-Play-Template.bat`
+6. Optional: `5-Play-Auto.bat` / `6-DryRun.bat`
+7. **Ctrl+C** or **Esc** = stop
 
 ---
 
