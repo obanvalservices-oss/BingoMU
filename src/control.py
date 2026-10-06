@@ -42,7 +42,7 @@ class Controller:
         x, y = rect.center
         self.click_xy(x, y, clicks=clicks)
 
-    def click_cell(self, row: int, col: int) -> None:
+    def click_cell(self, row: int, col: int, *, double: bool = False) -> None:
         """Click bingo cell (row, col) inside calibrated grid ROI."""
         g = self.cal.grid
         cell_w = g.w / 5
@@ -50,12 +50,20 @@ class Controller:
         cx = int(g.x + (col + 0.5) * cell_w)
         cy = int(g.y + (row + 0.5) * cell_h)
         if self.dry_run:
-            print(f"[dry-run] click cell ({row},{col}) -> ({cx},{cy})")
+            print(f"[dry-run] click cell ({row},{col}) -> ({cx},{cy}) double={double}")
             return
-        pyautogui.moveTo(cx, cy, duration=0.10)
-        time.sleep(0.08)
+        # Hover first so GRD registers the cell, then click (double for mark phase)
+        pyautogui.moveTo(cx, cy, duration=0.14)
+        time.sleep(0.18)
         pyautogui.click(cx, cy)
+        if double:
+            time.sleep(0.22)
+            pyautogui.click(cx, cy)
         time.sleep(self.cal.place_delay_s)
+
+    def click_cell_mark(self, row: int, col: int) -> None:
+        """Mark-phase click: double-click with longer hover (GRD-safe)."""
+        self.click_cell(row, col, double=True)
 
     def click_jewel_btn(self, jewel: str) -> None:
         """Click right-panel jewel selector (B/S/CR/H/L/C)."""

@@ -394,6 +394,8 @@ class BingoBot:
                     self.draw_detector.set_board(record.board)
 
             record.draws.append(jewel)
+            # Live sync: drop cells already blue so we don't click dead marks
+            self._sync_marks_from_vision(record.board)
             cands = record.board.candidates(jewel)
             print(
                 f"  Detectado: {jewel} ({JEWEL_NAMES.get(jewel, jewel)}) "
@@ -451,10 +453,11 @@ class BingoBot:
 
             ok = self._click_and_verify_mark(record, jewel, cell)
             if not ok:
-                # Try other candidates of the same jewel before giving up
+                # Prefer other blinking cells of same jewel first
                 alternates = [c for c in cands if c != cell]
+                alternates = self._order_by_blink(record.board, jewel, alternates)
                 recovered = False
-                for alt in alternates[:3]:
+                for alt in alternates[:4]:
                     print(f"  reintento con celda alternativa R{alt[0]+1}C{alt[1]+1}...")
                     if self._click_and_verify_mark(record, jewel, alt):
                         cell = alt
@@ -481,7 +484,8 @@ class BingoBot:
             self.draw_detector.reset()
             last_jewel = jewel
             completed += 1
-            self.controller.wait(0.55)
+            # Longer settle so next-draw blink isn't residual animation
+            self.controller.wait(0.85)
 
         frame = self.frame()
         ocr = read_total_score(frame, self.cal.score_roi)
@@ -506,6 +510,35 @@ class BingoBot:
         self.state = GameState.ACCEPT_REWARD
         return True
 
+    def _sync_marks_from_vision(self, board: BoardState) -> None:
+        """Mark as used any cell that already looks blue on screen."""
+        frame = self.frame()
+        for r in range(5):
+            for c in range(5):
+                if (r, c) == (2, 2):
+                    board.marked[r][c] = True
+                    continue
+                if board.marked[r][c]:
+                    continue
+                if self.marked_detector.cell_marked_blue(frame, r, c):
+                    board.marked[r][c] = True
+
+    def _order_by_blink(
+        self,
+        board: BoardState,
+        jewel: str,
+        cells: list[tuple[int, int]],
+    ) -> list[tuple[int, int]]:
+        """Sort candidate cells by recent blink activity (highest first)."""
+        act = self.draw_detector._activity_map()
+        if act is None:
+            return cells
+
+        def score(rc: tuple[int, int]) -> float:
+            return float(act[rc[0], rc[1]])
+
+        return sorted(cells, key=score, reverse=True)
+
     def _click_and_verify_mark(
         self,
         record: GameRecord,
@@ -516,6 +549,17 @@ class BingoBot:
         Click cell and verify the GAME advanced.
         Do NOT trust classify() flipping (B↔CR noise) or blue_glow alone.
         """
+        # Skip cells already blue (resume / prior miss)
+        probe = self.frame()
+        if self.marked_detector.cell_marked_blue(probe, *cell):
+            print(f"    skip R{cell[0]+1}C{cell[1]+1}: ya blue en pantalla")
+            record.board.marked[cell[0]][cell[1]] = True
+            return False
+
+        self.controller.focus_panel()
+        self.controller.wait(0.25)
+
+        # Fresh baselines AFTER focus (focus click can change UI slightly)
         frame_before = self.frame()
         before_score = crop(frame_before, self.cal.score_roi).copy()
         before_draw = crop(frame_before, self.cal.draw_jewel_roi).copy()
@@ -524,15 +568,16 @@ class BingoBot:
             self.marked_detector._cells[cell[0]][cell[1]],
         ).copy()
 
-        self.controller.focus_panel()
-        self.controller.click_cell(*cell)
+        self.controller.click_cell_mark(*cell)
+        # Let GRD register click before parking cursor off the board
+        self.controller.wait(0.55)
         self.controller.park_mouse()
-        self.controller.wait(0.85)
+        self.controller.wait(0.75)
 
         counter_streak = 0
         draw_streak = 0
         cell_streak = 0
-        for attempt in range(14):
+        for attempt in range(16):
             if self.controller.stopped:
                 return False
             frame = self.frame()
@@ -544,15 +589,15 @@ class BingoBot:
             )
             blue = self.marked_detector.cell_marked_blue(frame, *cell)
 
-            if cd >= 1.2:
+            if cd >= 1.0:
                 counter_streak += 1
             else:
                 counter_streak = 0
-            if dd >= 2.5:
+            if dd >= 2.0:
                 draw_streak += 1
             else:
                 draw_streak = 0
-            if cell_d >= 3.0 or blue:
+            if cell_d >= 2.5 or blue:
                 cell_streak += 1
             else:
                 cell_streak = 0
@@ -569,8 +614,15 @@ class BingoBot:
                 except Exception:
                     pass
                 return True
-            # Cell change only counts if counter/draw also moved at least a little
-            if cell_streak >= 2 and cell_d >= 8.0 and (cd >= 1.0 or dd >= 1.5):
+            # Strong cell change + any score/draw nudge
+            if cell_streak >= 2 and cell_d >= 6.0 and (cd >= 0.8 or dd >= 1.2 or blue):
+                try:
+                    self.marked_detector.update_cell_baseline(frame, *cell)
+                except Exception:
+                    pass
+                return True
+            # Blue mark appeared and draw icon moved a little (last draws / GRD lag)
+            if blue and cell_streak >= 3 and (cd >= 0.7 or dd >= 0.9):
                 try:
                     self.marked_detector.update_cell_baseline(frame, *cell)
                 except Exception:
@@ -579,7 +631,8 @@ class BingoBot:
             time.sleep(0.2)
 
         print("    reintento de clic...")
-        self.controller.click_cell(*cell)
+        self.controller.click_cell_mark(*cell)
+        self.controller.wait(0.55)
         self.controller.park_mouse()
         self.controller.wait(1.0)
         frame = self.frame()
@@ -591,7 +644,11 @@ class BingoBot:
         )
         blue = self.marked_detector.cell_marked_blue(frame, *cell)
         print(f"    retry check: counterΔ={cd:.1f} drawΔ={dd:.1f} cellΔ={cell_d:.1f} blue={blue}")
-        return (dd >= 2.5 or cd >= 1.5) and (cell_d >= 2.0 or blue)
+        if (dd >= 2.0 or cd >= 1.2) and (cell_d >= 2.0 or blue):
+            return True
+        if blue and (cd >= 0.8 or dd >= 1.0 or cell_d >= 4.0):
+            return True
+        return False
 
     def _wait_for_jewel(
         self,
