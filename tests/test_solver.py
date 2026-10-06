@@ -100,8 +100,23 @@ class TestSolver(unittest.TestCase):
     def test_choose_cell(self):
         b = make_board(SAMPLE)
         cell, e, p, method = choose_cell(b, "L", draw_index=0, use_mc=True, n_sims=100)
-        self.assertIn(method, ("monte_carlo", "heuristic"))
+        self.assertIn(method, ("monte_carlo", "heuristic", "heuristic_center"))
         self.assertIsNotNone(cell)
+
+    def test_center_first_harmony_chatgpt(self):
+        """H has center-line cells — must never pick peripheral R1C2 first."""
+        b = chatgpt_board()
+        # Center-line H: R3C2 (2,1), R5C3 (4,2), R1C5 (0,4)
+        # Peripheral H: R1C2 (0,1)
+        cell, _, _, method = choose_cell(b, "H", draw_index=0, use_mc=True, n_sims=200)
+        self.assertIn(cell, {(2, 1), (4, 2), (0, 4)})
+        self.assertNotEqual(cell, (0, 1))
+
+    def test_center_first_life_prefers_diagonal(self):
+        """Only L on center lines is R5C5 (main diag) — must pick it."""
+        b = chatgpt_board()
+        cell, _, _ = choose_heuristic(b, "L")
+        self.assertEqual(cell, (4, 4))
 
     def test_target_constant(self):
         self.assertEqual(TARGET_SCORE, 1000)

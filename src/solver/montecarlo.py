@@ -1,4 +1,4 @@
-"""Monte Carlo decision policy with learnable jewel priors."""
+"""Monte Carlo decision policy — center-line-first (same rule as heuristic)."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from ..types import (
     TARGET_SCORE,
 )
 from ..logger import empirical_jewel_priors
-from .scoring import score_board, center_lines
-from .heuristic import choose_heuristic
+from .scoring import score_board, center_lines, line_complete
+from .heuristic import choose_heuristic, center_candidates, cell_potential
 
 
 @dataclass
@@ -45,19 +45,30 @@ class JewelPriors:
         return rng.choices(jewels, weights=weights, k=1)[0]
 
 
+def _pick_center_first(board: BoardState, cands: list[tuple[int, int]]) -> tuple[int, int]:
+    """In playouts: prefer center-line cells, then highest potential."""
+    pool = [
+        cell
+        for cell in cands
+        if any(
+            cell in ln and not line_complete(board, ln) for ln in center_lines()
+        )
+    ] or cands
+    return max(pool, key=lambda cell: cell_potential(board, *cell))
+
+
 def _simulate_rest(
     board: BoardState,
     draws_left: int,
     priors: JewelPriors,
     rng: random.Random,
 ) -> int:
-    """Fast random-greedy playout for remaining draws."""
+    """Fast playout using center-first picks."""
     b = board.clone()
     for _ in range(draws_left):
         jewel = priors.sample(rng)
         cands = b.candidates(jewel)
         if not cands:
-            # try any remaining jewel type
             found = False
             for j in JEWEL_TYPES:
                 cands = b.candidates(j)
@@ -67,15 +78,7 @@ def _simulate_rest(
                     break
             if not found:
                 break
-        # Fast: pick candidate that lies on most incomplete center lines
-        best = cands[0]
-        best_v = -1
-        for cell in cands:
-            v = sum(1 for ln in center_lines() if cell in ln and not all(b.marked[r][c] for r, c in ln))
-            if v > best_v:
-                best_v = v
-                best = cell
-        b.mark(*best)
+        b.mark(*_pick_center_first(b, cands))
     return score_board(b)
 
 
@@ -88,11 +91,10 @@ def choose_monte_carlo(
     seed: Optional[int] = None,
 ) -> tuple[Optional[tuple[int, int]], float, float]:
     """
-    For each candidate cell of `jewel`, run n_sims / len(cands) playouts.
-    Returns (best_cell, E[score], P(score >= 1000)).
+    Evaluate candidates with MC, but ONLY among center-line candidates when any exist.
     """
     priors = priors or JewelPriors.uniform()
-    cands = board.candidates(jewel)
+    cands = center_candidates(board, jewel) or board.candidates(jewel)
     if not cands:
         return None, 0.0, 0.0
 
@@ -112,8 +114,9 @@ def choose_monte_carlo(
             scores.append(_simulate_rest(b, draws_remaining_after, priors, rng))
         e = sum(scores) / len(scores)
         p = sum(1 for s in scores if s >= TARGET_SCORE) / len(scores)
-        # Prefer P(hit 1000), then expected score
-        key = p * 10000.0 + e
+        # Prefer completing center now, then P(1000), then E[score]
+        immediate = cell_potential(board, *cell)
+        key = immediate * 10.0 + p * 10000.0 + e
         if key > best_key:
             best_key = key
             best_cell = cell
@@ -132,33 +135,37 @@ def choose_cell(
     use_mc: bool = True,
     n_sims: int = 2000,
 ) -> tuple[Optional[tuple[int, int]], float, float, str]:
-    """Unified chooser. draw_index is 0-based index of current draw."""
+    """
+    Unified chooser. Center lines always win over peripheral.
+    Heuristic is authoritative when it completes a center line now.
+    """
     remaining_after = max(0, total_draws - draw_index - 1)
-    cands = board.candidates(jewel)
-    # Late game / few options: heuristic prefers completing lines now
-    if len(cands) <= 1 or remaining_after <= 1:
-        cell, e, p = choose_heuristic(board, jewel)
-        return cell, e, p, "heuristic"
+    h_cell, h_e, h_p = choose_heuristic(board, jewel)
+
+    # Last draws or single candidate: pure heuristic (center-first)
+    if remaining_after <= 1 or len(board.candidates(jewel)) <= 1:
+        return h_cell, h_e, h_p, "heuristic"
+
     if use_mc and remaining_after > 0:
         cell, e, p = choose_monte_carlo(
             board, jewel, remaining_after, priors=priors, n_sims=n_sims
         )
-        # If MC and heuristic disagree, prefer the one that completes more lines now
-        h_cell, h_e, h_p = choose_heuristic(board, jewel)
-        if h_cell is not None and h_cell != cell:
-            from .scoring import all_lines, line_complete
+        # If heuristic completes a center line and MC does not, take heuristic
+        if h_cell is not None:
 
-            def completes(cell_: tuple[int, int] | None) -> int:
+            def center_completes(cell_: tuple[int, int] | None) -> int:
                 if cell_ is None:
                     return 0
                 b = board.clone()
                 b.mark(*cell_)
                 return sum(
-                    1 for ln in all_lines() if cell_ in ln and line_complete(b, ln)
+                    1
+                    for ln in center_lines()
+                    if cell_ in ln and line_complete(b, ln)
                 )
 
-            if completes(h_cell) > completes(cell):
-                return h_cell, h_e, h_p, "heuristic_line"
+            if center_completes(h_cell) > center_completes(cell):
+                return h_cell, h_e, h_p, "heuristic_center"
         return cell, e, p, "monte_carlo"
-    cell, e, p = choose_heuristic(board, jewel)
-    return cell, e, p, "heuristic"
+
+    return h_cell, h_e, h_p, "heuristic"
