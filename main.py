@@ -66,22 +66,26 @@ def interactive_mode() -> PlacementMode:
     return PlacementMode.AUTO if choice == "1" else PlacementMode.TEMPLATE
 
 
-def pre_start_countdown(seconds: float) -> None:
+def pre_start_countdown(seconds: float, resume: bool = False) -> None:
     seconds = max(0.0, float(seconds))
     if seconds <= 0:
         return
     print()
     print("=" * 56)
-    print("  Pon Chrome Remote Desktop al FRENTE (Jewel Bingo).")
+    if resume:
+        print("  RESUME — pon Remote Desktop al frente")
+        print("  (juego YA en PLAYING; no gastará card nueva)")
+    else:
+        print("  Pon Chrome Remote Desktop al FRENTE (Jewel Bingo).")
     print("  Minimiza o mueve la Terminal.")
-    print(f"  Empieza en {seconds:.0f}s  |  F8 = parar")
+    print(f"  Arranca en {seconds:.0f}s  |  ESC = parar")
     print("=" * 56)
     remaining = int(seconds)
     while remaining > 0:
         print(f"  {remaining}...", flush=True)
         time.sleep(1.0)
         remaining -= 1
-    print("  ¡Empezando!", flush=True)
+    print("  ¡Listo!", flush=True)
 
 
 def main() -> int:
@@ -120,7 +124,7 @@ def main() -> int:
     if args.resume:
         print("RESUME mode — no new card / no placement.")
     print("Running. ESC = stop (also F8 / Fn+F8). FAILSAFE = mouse to screen corner.")
-    pre_start_countdown(args.countdown)
+    pre_start_countdown(args.countdown, resume=args.resume)
     try:
         bot.run()
     finally:

@@ -51,3 +51,29 @@ def read_total_score(frame: np.ndarray, score_roi: Rect) -> Optional[int]:
 
     # Fallback: estimate via bright digit blobs — return None if unreliable
     return None
+
+
+def read_remaining_draws(frame: np.ndarray, score_roi: Rect) -> Optional[int]:
+    """
+    Try to read remaining draws (0–14) from the calibrated score/counter ROI.
+    Prefers a small integer; ignores large totals (score).
+    """
+    roi = crop(frame, score_roi)
+    if roi.size == 0:
+        return None
+    proc = _preprocess_for_ocr(roi)
+    text = ""
+    try:
+        import pytesseract
+
+        text = pytesseract.image_to_string(
+            proc,
+            config="--psm 7 -c tessedit_char_whitelist=0123456789",
+        )
+    except Exception:
+        text = ""
+    nums = [int(n) for n in re.findall(r"\d{1,2}", text.replace(" ", ""))]
+    small = [n for n in nums if 0 <= n <= 14]
+    if small:
+        return min(small)
+    return None

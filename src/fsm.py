@@ -28,7 +28,7 @@ from .types import (
 from .vision.board import BoardReader
 from .vision.boxes import find_blue_chest_center
 from .vision.draw import DrawDetector, MarkedCellDetector, patch_delta
-from .vision.score import read_total_score
+from .vision.score import read_remaining_draws, read_total_score
 from .vision.templates import JewelClassifier
 
 
@@ -146,24 +146,78 @@ class BingoBot:
         else:
             board = self.board_reader.read(frame)
 
-        # Detect already-marked cells (blue glow)
-        marked = self.marked_detector.detect_marked(frame)
+        # Stricter blue threshold for resume (avoid over-counting marked cells)
+        marked_n = 0
         for r in range(5):
             for c in range(5):
-                board.marked[r][c] = marked[r][c]
-        board.marked[2][2] = True
+                if (r, c) == (2, 2):
+                    board.marked[r][c] = True
+                    continue
+                patch = crop(frame, self.marked_detector._cells[r][c])
+                is_marked = False
+                if patch.size > 0:
+                    import cv2
 
-        marked_n = sum(
-            1 for r in range(5) for c in range(5) if board.marked[r][c] and (r, c) != (2, 2)
-        )
-        self._draws_done_offset = marked_n
-        left = max(0, DRAWS_PER_GAME - marked_n)
+                    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+                    blue = cv2.inRange(
+                        hsv,
+                        np.array([95, 60, 90], dtype=np.uint8),
+                        np.array([135, 255, 255], dtype=np.uint8),
+                    )
+                    ratio = cv2.countNonZero(blue) / float(
+                        patch.shape[0] * patch.shape[1] or 1
+                    )
+                    is_marked = ratio >= 0.18
+                board.marked[r][c] = is_marked
+                if is_marked:
+                    marked_n += 1
 
-        print("Board (resume):")
+        ocr_left = read_remaining_draws(frame, self.cal.score_roi)
+        by_marks = max(0, DRAWS_PER_GAME - marked_n)
+        # Prefer OCR remaining if sensible; else marks
+        if ocr_left is not None:
+            left = ocr_left
+            # If OCR says more left than unmarked cells, trust OCR and unmark extras? 
+            # Better: trust OCR for loop length; keep visual marks for candidates
+            source = "ocr_counter"
+        else:
+            left = by_marks
+            source = "marked_cells"
+
+        left = int(max(0, min(left, DRAWS_PER_GAME)))
+        self._draws_done_offset = DRAWS_PER_GAME - left
+
+        print()
+        print("=" * 56)
+        print("  RESUME — partida en curso")
+        print("=" * 56)
+        print(f"  Movimientos hechos (aprox): {self._draws_done_offset}/{DRAWS_PER_GAME}")
+        print(f"  Sorteos que quedan:         {left}")
+        print(f"  Celdas blue detectadas:     {marked_n}")
+        if ocr_left is not None:
+            print(f"  Contador OCR (score ROI):   {ocr_left}")
+        print(f"  Origen del conteo:          {source}")
+        print("=" * 56)
+        print("Board:")
         for row in board.cells:
             print(" ", row)
-        print(f"Celdas ya marcadas: {marked_n} → quedan ~{left} sorteos")
-        self.logger.log_event("resume_playing", marked=marked_n, left=left)
+        self.logger.log_event(
+            "resume_playing",
+            marked=marked_n,
+            left=left,
+            ocr_left=ocr_left,
+            source=source,
+        )
+
+        if left <= 0:
+            print("No quedan sorteos — voy a Get Reward (sin gastar card).")
+            self._active = GameRecord(
+                board=board,
+                placement_mode=self.placement_mode.value,
+            )
+            self.games_played = 0
+            self.state = GameState.ACCEPT_REWARD
+            return True
 
         self.marked_detector.set_baseline(frame)
         self.draw_detector.set_board(board)
@@ -280,19 +334,28 @@ class BingoBot:
     def _draw_loop(self) -> bool:
         record: GameRecord = self._active  # type: ignore
         start_i = getattr(self, "_draws_done_offset", 0) or 0
-        start_i = int(max(0, min(start_i, DRAWS_PER_GAME - 1)))
+        start_i = int(max(0, min(start_i, DRAWS_PER_GAME)))
+        left = DRAWS_PER_GAME - start_i
         print(
-            f"\n=== FASE PLAYING: sorteos {start_i+1}→{DRAWS_PER_GAME} ===\n"
-            "Detección por parpadeo del TABLERO (ROI solo si anima).\n"
-            "Verify estricto: NO acepta flip falso B↔CR."
+            f"\n=== PLAYING: quedan {left} sorteos "
+            f"(movimiento {start_i + 1} de {DRAWS_PER_GAME}) ==="
         )
+        if left <= 0:
+            print("Nada que marcar — Get Reward.")
+            self.state = GameState.ACCEPT_REWARD
+            return True
+        print("Detección por parpadeo del TABLERO. Verify estricto.")
         completed = start_i
         last_jewel: Optional[str] = None
         for draw_i in range(start_i, DRAWS_PER_GAME):
+            print(
+                f"\n--- Sorteo {draw_i + 1}/{DRAWS_PER_GAME} "
+                f"(quedan {DRAWS_PER_GAME - draw_i}) ---"
+            )
             if self.controller.stopped:
                 return False
-            timeout = 28.0 if draw_i == 0 else 18.0
-            print(f"\nEsperando sorteo {draw_i+1}/{DRAWS_PER_GAME}...")
+            timeout = 28.0 if draw_i == start_i else 18.0
+            print("Esperando joya del sorteo...")
             self.controller.park_mouse()
             jewel = self._wait_for_jewel(
                 timeout=timeout,
