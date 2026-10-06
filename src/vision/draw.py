@@ -28,8 +28,8 @@ class DrawDetector:
         classifier: Optional[JewelClassifier] = None,
         history: int = 12,
         blink_threshold: float = 10.0,
-        cell_blink_threshold: float = 10.0,
-        margin_ratio: float = 1.25,
+        cell_blink_threshold: float = 6.0,
+        margin_ratio: float = 1.20,
     ) -> None:
         self.cal = calibration
         self.classifier = classifier or JewelClassifier(min_score=0.04)
@@ -163,24 +163,27 @@ class DrawDetector:
 
     def detect(self, frame: np.ndarray, board: Optional[BoardState] = None) -> Optional[str]:
         self.push(frame)
-        # 1) Stable ROI vote (friend-bot style)
-        roi_j = self.stable_roi_vote(min_votes=3)
+        blink = self.blink_score()
         board_j = self.detect_from_board_blink(board)
-        if roi_j and board_j and roi_j == board_j:
-            self._last_conf = 3.0
-            self._last_source = "roi+board"
+        roi_j = self.stable_roi_vote(min_votes=4)
+
+        # Prefer BOARD blink: drawn jewels light up matching cells on the grid.
+        # ROI-only with blink≈0 was falsely flipping B↔CR in logs.
+        if board_j and self._last_conf >= 1.25:
+            return board_j
+
+        # ROI only if the draw icon is actually animating
+        if roi_j and blink >= max(3.0, self.blink_threshold * 0.35):
+            if board_j and board_j != roi_j:
+                # disagree → trust board blink if present
+                if self._last_source == "board_blink":
+                    return board_j
+            self._last_source = "roi_blink"
+            self._last_conf = max(self._last_conf, blink / 5.0)
             return roi_j
-        if roi_j:
-            return roi_j
+
         if board_j:
             return board_j
-        # 2) single-frame ROI if animating
-        if self.blink_score() >= self.blink_threshold:
-            one = self.classify_roi_now(frame)
-            if one:
-                self._last_conf = 1.1
-                self._last_source = "roi_blink"
-                return one
         return None
 
     def debug_snapshot(self, board: Optional[BoardState] = None) -> str:

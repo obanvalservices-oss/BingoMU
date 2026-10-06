@@ -227,23 +227,29 @@ class BingoBot:
         record: GameRecord = self._active  # type: ignore
         print(
             f"\n=== FASE PLAYING: {DRAWS_PER_GAME} sorteos ===\n"
-            "NO reinicio de colocación hasta terminar (o STOP de seguridad)."
+            "Detección por parpadeo del TABLERO (ROI solo si anima).\n"
+            "Verify estricto: NO acepta flip falso B↔CR."
         )
         completed = 0
+        last_jewel: Optional[str] = None
         for draw_i in range(DRAWS_PER_GAME):
             if self.controller.stopped:
                 return False
-            timeout = 25.0 if draw_i == 0 else 16.0
+            timeout = 28.0 if draw_i == 0 else 18.0
             print(f"\nEsperando sorteo {draw_i+1}/{DRAWS_PER_GAME}...")
             self.controller.park_mouse()
-            jewel = self._wait_for_jewel(timeout=timeout, board=record.board)
+            jewel = self._wait_for_jewel(
+                timeout=timeout,
+                board=record.board,
+                avoid=last_jewel,
+            )
             if jewel is None:
                 self.logger.log_event("draw_timeout", draw_index=draw_i, completed=completed)
                 print(
                     "  TIMEOUT detectando joya sorteada.\n"
-                    f"  debug: {self.draw_detector.debug_snapshot(record.board)}"
+                    f"  debug: {self.draw_detector.debug_snapshot(record.board)}\n"
+                    "  Tip: recalibra el punto 'CURRENT DRAWN JEWEL' (icono del sorteo)."
                 )
-                # CRITICAL: do NOT start a new placement cycle on early failure
                 if completed < 10:
                     print(
                         "  SAFETY STOP: pocos sorteos completados "
@@ -251,7 +257,6 @@ class BingoBot:
                     )
                     self.state = GameState.ERROR
                     return False
-                print("  Casi terminado — cierro ronda.")
                 break
 
             record.draws.append(jewel)
@@ -267,7 +272,6 @@ class BingoBot:
                 self.state = GameState.ERROR
                 return False
 
-            # Prefer the blinking cell of that jewel if visible; else Monte Carlo
             blink_cell = self.draw_detector.most_blinking_cell(record.board, jewel)
             print("  Calculando mejor celda...")
             cell, e_score, p1000, method = choose_cell(
@@ -278,16 +282,17 @@ class BingoBot:
                 use_mc=self.use_mc,
                 n_sims=min(self.n_sims, 400),
             )
-            if blink_cell is not None and blink_cell in cands:
-                # Use blink hint when MC agrees it's a candidate; prefer MC if different
-                # but blink is strong signal of the legal highlight
-                if cell is None or cell == blink_cell:
-                    cell = blink_cell
-                    method = "blink_cell"
-                else:
-                    # Prefer blink cell for reliability of the mark registering
-                    cell = blink_cell
-                    method = f"{method}+blink"
+            # Prefer blinking cell only when board-blink was the detection source
+            if (
+                blink_cell is not None
+                and blink_cell in cands
+                and "board" in (self.draw_detector.last_source or "")
+            ):
+                cell = blink_cell
+                method = "board_blink_cell"
+            elif cell is None and blink_cell is not None:
+                cell = blink_cell
+                method = "blink_fallback"
 
             if cell is None:
                 self.logger.log_event("no_candidate", jewel=jewel, draw_index=draw_i)
@@ -320,8 +325,9 @@ class BingoBot:
             record.board.mark(*cell)
             self.draw_detector.set_board(record.board)
             self.draw_detector.reset()
+            last_jewel = jewel
             completed += 1
-            self.controller.wait(0.45)
+            self.controller.wait(0.55)
 
         frame = self.frame()
         ocr = read_total_score(frame, self.cal.score_roi)
@@ -352,62 +358,85 @@ class BingoBot:
         jewel: str,
         cell: tuple[int, int],
     ) -> bool:
-        """Click cell, park mouse, verify draw/counter/blue-glow changed."""
+        """
+        Click cell and verify the GAME advanced.
+        Do NOT trust classify() flipping (B↔CR noise) or blue_glow alone.
+        """
         frame_before = self.frame()
         before_score = crop(frame_before, self.cal.score_roi).copy()
         before_draw = crop(frame_before, self.cal.draw_jewel_roi).copy()
-        before_jewel = self.draw_detector.classify_roi_now(frame_before)
+        before_cell = crop(
+            frame_before,
+            self.marked_detector._cells[cell[0]][cell[1]],
+        ).copy()
 
         self.controller.focus_panel()
         self.controller.click_cell(*cell)
         self.controller.park_mouse()
-        self.controller.wait(0.7)
+        self.controller.wait(0.85)
 
         counter_streak = 0
-        for attempt in range(12):
+        draw_streak = 0
+        cell_streak = 0
+        for attempt in range(14):
             if self.controller.stopped:
                 return False
             frame = self.frame()
             cd = patch_delta(before_score, crop(frame, self.cal.score_roi))
             dd = patch_delta(before_draw, crop(frame, self.cal.draw_jewel_roi))
-            after_jewel = self.draw_detector.classify_roi_now(frame)
+            cell_d = patch_delta(
+                before_cell,
+                crop(frame, self.marked_detector._cells[cell[0]][cell[1]]),
+            )
             blue = self.marked_detector.cell_marked_blue(frame, *cell)
-            draw_changed = (
-                after_jewel is not None
-                and before_jewel is not None
-                and after_jewel != before_jewel
-            ) or dd >= 4.0
-            if cd >= 1.0:
+
+            if cd >= 1.2:
                 counter_streak += 1
             else:
                 counter_streak = 0
+            if dd >= 2.5:
+                draw_streak += 1
+            else:
+                draw_streak = 0
+            if cell_d >= 3.0 or blue:
+                cell_streak += 1
+            else:
+                cell_streak = 0
+
             print(
                 f"    verify {attempt+1}: counterΔ={cd:.1f} drawΔ={dd:.1f} "
-                f"next={after_jewel} blue_glow={blue} streak={counter_streak}"
+                f"cellΔ={cell_d:.1f} blue={blue} "
+                f"cStreak={counter_streak} dStreak={draw_streak} cellStreak={cell_streak}"
             )
-            if draw_changed or counter_streak >= 2 or blue:
+            # Real advance: counter moved, draw icon pixels changed, or cell lit up stably
+            if counter_streak >= 2 or draw_streak >= 2 or (cell_streak >= 2 and (blue or cell_d >= 4.0)):
                 try:
                     self.marked_detector.update_cell_baseline(frame, *cell)
                 except Exception:
                     pass
                 return True
-            time.sleep(0.22)
+            time.sleep(0.2)
 
-        # One retry click
         print("    reintento de clic...")
         self.controller.click_cell(*cell)
         self.controller.park_mouse()
-        self.controller.wait(0.9)
+        self.controller.wait(1.0)
         frame = self.frame()
-        if self.marked_detector.cell_marked_blue(frame, *cell):
-            return True
+        dd = patch_delta(before_draw, crop(frame, self.cal.draw_jewel_roi))
         cd = patch_delta(before_score, crop(frame, self.cal.score_roi))
-        return cd >= 1.5
+        cell_d = patch_delta(
+            before_cell,
+            crop(frame, self.marked_detector._cells[cell[0]][cell[1]]),
+        )
+        blue = self.marked_detector.cell_marked_blue(frame, *cell)
+        print(f"    retry check: counterΔ={cd:.1f} drawΔ={dd:.1f} cellΔ={cell_d:.1f} blue={blue}")
+        return dd >= 2.5 or cd >= 1.5 or (blue and cell_d >= 3.0)
 
     def _wait_for_jewel(
         self,
         timeout: float | None = None,
         board: Optional[BoardState] = None,
+        avoid: Optional[str] = None,
     ) -> Optional[str]:
         timeout = timeout if timeout is not None else self.cal.draw_timeout_s
         deadline = time.time() + timeout
@@ -421,15 +450,26 @@ class BingoBot:
             if now - last_log >= 1.5:
                 print(f"  ... {self.draw_detector.debug_snapshot(board)}")
                 last_log = now
+            if jewel and avoid and jewel == avoid:
+                # Still showing previous jewel — wait for next draw
+                stable = 0
+                last = None
+                time.sleep(0.12)
+                continue
             if jewel and jewel == last:
                 stable += 1
-                if stable >= 3:
+                # Need board activity or ROI blink — reject static false labels
+                blink = self.draw_detector.blink_score()
+                src = self.draw_detector.last_source or ""
+                if stable >= 3 and ("board" in src or blink >= 3.0):
+                    return jewel
+                if stable >= 5 and blink >= 2.0:
                     return jewel
             else:
                 stable = 1 if jewel else 0
                 last = jewel
             time.sleep(0.12)
-        return last if stable >= 3 else None
+        return None
 
     def _accept_reward(self) -> bool:
         self.logger.log_event("accept_reward")
