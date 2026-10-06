@@ -44,6 +44,7 @@ class BingoBot:
         log_dir: str = "logs",
         template_dir: str | None = "assets/templates",
         resume: bool = False,
+        resume_left: int | None = None,
     ) -> None:
         self.cal = calibration
         self.placement_mode = placement_mode
@@ -52,6 +53,7 @@ class BingoBot:
         self.n_sims = n_sims
         self.max_games = max_games if max_games is not None else (1 if resume else None)
         self.resume = resume
+        self.resume_left = resume_left
         self.capture = ScreenCapture()
         self.controller = Controller(calibration, dry_run=dry_run)
         self.classifier = JewelClassifier(template_dir=template_dir)
@@ -146,46 +148,63 @@ class BingoBot:
         else:
             board = self.board_reader.read(frame)
 
-        # Stricter blue threshold for resume (avoid over-counting marked cells)
-        marked_n = 0
+        # Score blue-glow ratio per cell (FREE always marked)
+        import cv2
+
+        ratios: list[tuple[float, int, int]] = []
         for r in range(5):
             for c in range(5):
                 if (r, c) == (2, 2):
                     board.marked[r][c] = True
                     continue
+                board.marked[r][c] = False
                 patch = crop(frame, self.marked_detector._cells[r][c])
-                is_marked = False
+                ratio = 0.0
                 if patch.size > 0:
-                    import cv2
-
                     hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
                     blue = cv2.inRange(
                         hsv,
-                        np.array([95, 60, 90], dtype=np.uint8),
+                        np.array([95, 70, 100], dtype=np.uint8),
                         np.array([135, 255, 255], dtype=np.uint8),
                     )
                     ratio = cv2.countNonZero(blue) / float(
                         patch.shape[0] * patch.shape[1] or 1
                     )
-                    is_marked = ratio >= 0.18
-                board.marked[r][c] = is_marked
-                if is_marked:
-                    marked_n += 1
+                ratios.append((ratio, r, c))
+
+        ratios.sort(reverse=True)
+        strong = [(rt, r, c) for rt, r, c in ratios if rt >= 0.22]
+        soft = [(rt, r, c) for rt, r, c in ratios if rt >= 0.12]
 
         ocr_left = read_remaining_draws(frame, self.cal.score_roi)
-        by_marks = max(0, DRAWS_PER_GAME - marked_n)
-        # Prefer OCR remaining if sensible; else marks
-        if ocr_left is not None:
-            left = ocr_left
-            # If OCR says more left than unmarked cells, trust OCR and unmark extras? 
-            # Better: trust OCR for loop length; keep visual marks for candidates
+        by_strong = max(0, DRAWS_PER_GAME - len(strong))
+
+        # User-provided remaining is authoritative (auto blue/OCR often wrong)
+        if self.resume_left is not None:
+            left = int(self.resume_left)
+            source = "user"
+        elif ocr_left is not None:
+            left = int(ocr_left)
             source = "ocr_counter"
         else:
-            left = by_marks
+            left = by_strong
             source = "marked_cells"
 
         left = int(max(0, min(left, DRAWS_PER_GAME)))
-        self._draws_done_offset = DRAWS_PER_GAME - left
+        expected_marked = DRAWS_PER_GAME - left  # non-FREE cells that should be blue
+        self._draws_done_offset = expected_marked
+
+        # Mark exactly the top-N bluest cells (avoids over-count that killed resume)
+        for _, r, c in ratios:
+            board.marked[r][c] = False
+        board.marked[2][2] = True
+        picked = soft[:expected_marked] if expected_marked else []
+        # If not enough soft blues, still take top-N by ratio
+        if len(picked) < expected_marked:
+            picked = ratios[:expected_marked]
+        for rt, r, c in picked:
+            board.marked[r][c] = True
+        marked_n = len(picked)
 
         print()
         print("=" * 56)
@@ -193,10 +212,14 @@ class BingoBot:
         print("=" * 56)
         print(f"  Movimientos hechos (aprox): {self._draws_done_offset}/{DRAWS_PER_GAME}")
         print(f"  Sorteos que quedan:         {left}")
-        print(f"  Celdas blue detectadas:     {marked_n}")
+        print(f"  Celdas marcadas (top blue): {marked_n}")
+        print(f"  Blue fuertes (≥0.22):       {len(strong)}  → auto-quedarían {by_strong}")
         if ocr_left is not None:
             print(f"  Contador OCR (score ROI):   {ocr_left}")
         print(f"  Origen del conteo:          {source}")
+        print("  Celdas marcadas:")
+        for rt, r, c in picked:
+            print(f"    R{r+1}C{c+1} {board.cells[r][c]:3s}  blue={rt:.2f}")
         print("=" * 56)
         print("Board:")
         for row in board.cells:
@@ -207,6 +230,7 @@ class BingoBot:
             left=left,
             ocr_left=ocr_left,
             source=source,
+            strong_blue=len(strong),
         )
 
         if left <= 0:
@@ -511,7 +535,9 @@ class BingoBot:
         return True
 
     def _sync_marks_from_vision(self, board: BoardState) -> None:
-        """Mark as used any cell that already looks blue on screen."""
+        """Mark as used any cell that already looks clearly blue on screen."""
+        import cv2
+
         frame = self.frame()
         for r in range(5):
             for c in range(5):
@@ -520,7 +546,20 @@ class BingoBot:
                     continue
                 if board.marked[r][c]:
                     continue
-                if self.marked_detector.cell_marked_blue(frame, r, c):
+                patch = crop(frame, self.marked_detector._cells[r][c])
+                if patch.size == 0:
+                    continue
+                hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+                blue = cv2.inRange(
+                    hsv,
+                    np.array([95, 70, 100], dtype=np.uint8),
+                    np.array([135, 255, 255], dtype=np.uint8),
+                )
+                ratio = cv2.countNonZero(blue) / float(
+                    patch.shape[0] * patch.shape[1] or 1
+                )
+                # Stricter than cell_marked_blue — avoid false locks mid-game
+                if ratio >= 0.20:
                     board.marked[r][c] = True
 
     def _order_by_blink(

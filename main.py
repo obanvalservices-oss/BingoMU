@@ -51,6 +51,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Join a game ALREADY in PLAYING (skip Start/place/box; no new card)",
     )
+    p.add_argument(
+        "--left",
+        type=int,
+        default=None,
+        metavar="N",
+        help="With --resume: how many draws are LEFT (1–14). Overrides auto-count.",
+    )
     p.add_argument("--show-pattern", action="store_true", help="Print ChatGPT pattern and exit")
     return p.parse_args()
 
@@ -64,6 +71,32 @@ def interactive_mode() -> PlacementMode:
     print()
     choice = input("Choose 1 or 2 [default 2]: ").strip() or "2"
     return PlacementMode.AUTO if choice == "1" else PlacementMode.TEMPLATE
+
+
+def ask_remaining_draws(preset: int | None = None) -> int:
+    """Ask how many draws are left (user knows better than blue/OCR)."""
+    if preset is not None:
+        n = int(preset)
+        if not 0 <= n <= 14:
+            raise SystemExit(f"--left must be 0–14, got {n}")
+        print(f"RESUME: usando --left={n} sorteos restantes.")
+        return n
+    print()
+    print("=== RESUME: ¿cuántos sorteos QUEDAN en el juego? ===")
+    print("  (Mira el contador / lo que falta marcar. Ej: si quedan 5 → escribe 5)")
+    while True:
+        raw = input("  Quedan [1-14]: ").strip()
+        if not raw:
+            print("  Escribe un número (obligatorio en resume).")
+            continue
+        try:
+            n = int(raw)
+        except ValueError:
+            print("  Número inválido.")
+            continue
+        if 0 <= n <= 14:
+            return n
+        print("  Debe ser entre 0 y 14.")
 
 
 def pre_start_countdown(seconds: float, resume: bool = False) -> None:
@@ -109,6 +142,9 @@ def main() -> int:
         mode = interactive_mode()
 
     cal = Calibration.load(str(args.cal))
+    resume_left = None
+    if args.resume:
+        resume_left = ask_remaining_draws(args.left)
     bot = BingoBot(
         calibration=cal,
         placement_mode=mode,
@@ -119,10 +155,11 @@ def main() -> int:
         log_dir=str(args.log_dir),
         template_dir=str(ROOT / "assets" / "templates"),
         resume=args.resume,
+        resume_left=resume_left,
     )
     stop_listener = install_kill_hotkey(bot.controller, keys=("esc", "f8"))
     if args.resume:
-        print("RESUME mode — no new card / no placement.")
+        print(f"RESUME mode — no new card / no placement. Quedan {resume_left}.")
     print("Running. ESC = stop (also F8 / Fn+F8). FAILSAFE = mouse to screen corner.")
     pre_start_countdown(args.countdown, resume=args.resume)
     try:
