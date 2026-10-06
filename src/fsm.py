@@ -26,6 +26,7 @@ from .types import (
     PlacementMode,
 )
 from .vision.board import BoardReader
+from .vision.boxes import find_blue_chest_center
 from .vision.draw import DrawDetector, MarkedCellDetector
 from .vision.score import read_total_score
 from .vision.templates import JewelClassifier
@@ -130,31 +131,39 @@ class BingoBot:
             self.controller.wait(self.cal.post_auto_wait_s)
         else:
             self.logger.log_event("place_template", pattern="chatgpt")
-            print("Placing jewels: TEMPLATE (ChatGPT pattern)")
+            print("Placing jewels: TEMPLATE (ChatGPT pattern) — slow/GRD-safe")
+            # Start UI still settling — especially critical before first jewel (Bless)
+            self.controller.wait(1.2)
             self._place_template()
-            self.controller.wait(1.0)
+            print("Esperando a que aparezcan los cofres...")
+            self.controller.wait(1.8)
         self.state = GameState.READ_BOARD
         return True
 
     def _place_template(self) -> None:
-        """Select each jewel from the right panel, then click its cells."""
+        """Select each jewel from the right panel, then click its cells (slow + re-select)."""
         for jewel, cells in placement_plan(TEMPLATE_CHATGPT):
             if self.controller.stopped:
                 return
             name = JEWEL_NAMES.get(jewel, jewel)
             print(f"  select {jewel} ({name}) → {len(cells)} cells")
-            self.controller.click_jewel_btn(jewel)
-            self.controller.wait(0.35)
-            for r, c in cells:
+            # Double-select with settle (fixes Bless miss on GRD)
+            self.controller.select_jewel(jewel)
+            for i, (r, c) in enumerate(cells):
                 if self.controller.stopped:
                     return
+                # Mid-group re-select so GRD doesn't lose the active jewel
+                if i == 2:
+                    print(f"    re-select {jewel} mid-group")
+                    self.controller.select_jewel(jewel)
                 self.controller.click_cell(r, c)
-                self.controller.wait(self.cal.place_delay_s)
+                self.controller.wait(max(0.35, self.cal.place_delay_s))
+            # Pause between jewel types so UI registers the group
+            self.controller.wait(0.7)
 
     def _read_board_and_pick_box(self) -> bool:
         frame = self.frame()
         if self.placement_mode == PlacementMode.TEMPLATE:
-            # Prefer known template; optionally verify with vision
             board = chatgpt_board()
             try:
                 seen = self.board_reader.read(frame)
@@ -166,12 +175,8 @@ class BingoBot:
                         if seen.cells[r][c] and seen.cells[r][c] != board.cells[r][c]:
                             mismatches += 1
                 self.logger.log_event("board_verify", mismatches=mismatches)
-                if mismatches <= 4:
-                    # vision roughly agrees — keep template
-                    pass
-                else:
-                    self.logger.log_event("board_verify_warn", using="vision_fallback")
-                    # still use template for solver (placement was intentional)
+                if mismatches > 4:
+                    self.logger.log_event("board_verify_warn", using="template_anyway")
             except Exception:
                 pass
         else:
@@ -188,9 +193,19 @@ class BingoBot:
         for row in board.cells:
             print(" ", row)
 
-        self.controller.click_top_left_box()
-        print("Caja seleccionada — esperando animación del primer sorteo...")
-        self.controller.wait(2.0)
+        # Only click the BLUE chest (vision leftmost blue blob)
+        print("Buscando cofre AZUL (no rojo)...")
+        self.controller.wait(0.8)
+        frame = self.frame()
+        blue = find_blue_chest_center(frame, self.cal)
+        if blue is not None:
+            print(f"  Cofre azul @ {blue}")
+            self.controller.click_xy_box(*blue)
+        else:
+            print("  Vision falló — usando calibración boxes")
+            self.controller.click_top_left_box()
+        print("Caja azul seleccionada — esperando primer sorteo...")
+        self.controller.wait(2.5)
         self._active = GameRecord(
             board=board,
             placement_mode=self.placement_mode.value,
@@ -313,14 +328,16 @@ class BingoBot:
                 last_log = now
             if jewel and jewel == last:
                 stable += 1
-                # need a few stable frames to avoid flicker false positives
-                if stable >= 3:
+                # need more stable frames + confidence
+                if stable >= 4 and self.draw_detector.last_confidence >= 1.2:
+                    return jewel
+                if stable >= 6:
                     return jewel
             else:
                 stable = 1 if jewel else 0
                 last = jewel
-            time.sleep(0.08)
-        return last if stable >= 2 else None
+            time.sleep(0.10)
+        return last if stable >= 4 else None
 
     def _accept_reward(self) -> bool:
         self.logger.log_event("accept_reward")

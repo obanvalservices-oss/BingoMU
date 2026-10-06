@@ -18,19 +18,20 @@ class DrawDetector:
     """
     Detect which jewel is currently drawn.
 
-    Primary (when board layout is known): cells of the drawn type blink on the
-    5x5 grid — measure temporal variance per cell and map back to jewel codes.
-
-    Secondary: classify the calibrated draw_jewel_roi by color/template.
+    Strategy:
+      1) ROI classify when the draw icon is blinking / changing.
+      2) Board blink: unmarked cells with outlier temporal variance → jewel type
+         (require clear margin vs 2nd place to avoid noise clicks).
     """
 
     def __init__(
         self,
         calibration: Calibration,
         classifier: Optional[JewelClassifier] = None,
-        history: int = 10,
-        blink_threshold: float = 10.0,
-        cell_blink_threshold: float = 8.0,
+        history: int = 12,
+        blink_threshold: float = 12.0,
+        cell_blink_threshold: float = 12.0,
+        margin_ratio: float = 1.35,
     ) -> None:
         self.cal = calibration
         self.classifier = classifier or JewelClassifier(min_score=0.05)
@@ -38,15 +39,22 @@ class DrawDetector:
         self.cell_means: deque[np.ndarray] = deque(maxlen=history)
         self.blink_threshold = blink_threshold
         self.cell_blink_threshold = cell_blink_threshold
+        self.margin_ratio = margin_ratio
         self._cells = cell_rects(calibration.grid)
         self._board: Optional[BoardState] = None
+        self._last_conf: float = 0.0
 
     def reset(self) -> None:
         self.history.clear()
         self.cell_means.clear()
+        self._last_conf = 0.0
 
     def set_board(self, board: BoardState) -> None:
         self._board = board
+
+    @property
+    def last_confidence(self) -> float:
+        return self._last_conf
 
     def push(self, frame: np.ndarray) -> None:
         roi = crop(frame, self.cal.draw_jewel_roi)
@@ -69,71 +77,82 @@ class DrawDetector:
         stack = np.stack(list(self.history), axis=0)
         return float(stack.std(axis=0).mean())
 
-    def detect_from_board_blink(self, board: Optional[BoardState] = None) -> Optional[str]:
-        """Infer drawn jewel from which unmarked board cells are blinking."""
-        b = board or self._board
-        if b is None or len(self.cell_means) < 4:
-            return None
-        stack = np.stack(list(self.cell_means), axis=0)  # T,5,5
+    def _jewel_blink_scores(self, board: BoardState) -> dict[str, float]:
+        stack = np.stack(list(self.cell_means), axis=0)
         std = stack.std(axis=0)
-
-        scores: dict[str, list[float]] = {j: [] for j in JEWEL_TYPES}
+        scores: dict[str, float] = {j: 0.0 for j in JEWEL_TYPES}
         for r in range(BOARD_SIZE):
             for c in range(BOARD_SIZE):
-                if b.marked[r][c]:
+                if board.marked[r][c]:
                     continue
-                jewel = b.cells[r][c]
+                jewel = board.cells[r][c]
                 if jewel not in scores:
                     continue
-                scores[jewel].append(float(std[r, c]))
+                # average of top blinks for this jewel type (more stable than max alone)
+                scores[jewel] = max(scores[jewel], float(std[r, c]))
+        return scores
 
-        best_j: Optional[str] = None
-        best_v = 0.0
-        for j, vals in scores.items():
-            if not vals:
-                continue
-            v = max(vals)
-            if v > best_v:
-                best_v = v
-                best_j = j
-
-        if best_j is None or best_v < self.cell_blink_threshold:
+    def detect_from_board_blink(self, board: Optional[BoardState] = None) -> Optional[str]:
+        b = board or self._board
+        if b is None or len(self.cell_means) < 5:
             return None
+        scores = self._jewel_blink_scores(b)
+        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+        best_j, best_v = ranked[0]
+        second_v = ranked[1][1] if len(ranked) > 1 else 0.0
+        if best_v < self.cell_blink_threshold:
+            self._last_conf = 0.0
+            return None
+        # Require clear winner so we don't click on ambient GRD noise
+        if second_v > 0 and best_v < second_v * self.margin_ratio:
+            self._last_conf = 0.0
+            return None
+        self._last_conf = best_v / max(second_v, 1.0)
         return best_j
 
     def detect_from_roi(self, frame: np.ndarray) -> Optional[str]:
         roi = crop(frame, self.cal.draw_jewel_roi)
         if roi.size == 0:
             return None
+        # Prefer ROI only when it is actually animating
+        if self.blink_score() < self.blink_threshold and len(self.history) >= 4:
+            return None
         jewel = self.classifier.classify_draw_roi(roi)
         if jewel == "FREE" or jewel is None:
             return None
+        self._last_conf = max(self._last_conf, self.blink_score() / 10.0)
         return jewel
 
     def detect(self, frame: np.ndarray, board: Optional[BoardState] = None) -> Optional[str]:
         self.push(frame)
-        j = self.detect_from_board_blink(board)
-        if j:
-            return j
-        return self.detect_from_roi(frame)
+        # ROI first when clearly blinking (often the drawn icon itself)
+        roi_j = self.detect_from_roi(frame)
+        board_j = self.detect_from_board_blink(board)
+        if roi_j and board_j and roi_j == board_j:
+            self._last_conf = max(self._last_conf, 2.0)
+            return roi_j
+        if board_j and self._last_conf >= 1.35:
+            return board_j
+        if roi_j and self.blink_score() >= self.blink_threshold:
+            return roi_j
+        return board_j or roi_j
 
     def debug_snapshot(self, board: Optional[BoardState] = None) -> str:
         b = board or self._board
         roi_blink = self.blink_score()
         board_j = self.detect_from_board_blink(b)
-        parts = [f"roi_blink={roi_blink:.1f}", f"board_guess={board_j}"]
+        parts = [
+            f"roi_blink={roi_blink:.1f}",
+            f"board_guess={board_j}",
+            f"conf={self._last_conf:.2f}",
+        ]
         if len(self.cell_means) >= 4 and b is not None:
-            stack = np.stack(list(self.cell_means), axis=0)
-            std = stack.std(axis=0)
-            top = []
-            for r in range(BOARD_SIZE):
-                for c in range(BOARD_SIZE):
-                    if b.marked[r][c]:
-                        continue
-                    top.append((float(std[r, c]), r, c, b.cells[r][c]))
-            top.sort(reverse=True)
-            tip = ", ".join(f"R{r+1}C{c+1}:{j}={v:.1f}" for v, r, c, j in top[:3])
-            parts.append(f"top=[{tip}]")
+            scores = self._jewel_blink_scores(b)
+            tip = ", ".join(
+                f"{j}={scores[j]:.1f}"
+                for j, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]
+            )
+            parts.append(f"scores=[{tip}]")
         return " | ".join(parts)
 
 

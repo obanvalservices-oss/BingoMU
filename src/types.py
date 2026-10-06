@@ -104,7 +104,8 @@ class Calibration:
     click_delay_s: float = 0.45
     draw_timeout_s: float = 15.0
     post_auto_wait_s: float = 1.5
-    place_delay_s: float = 0.25  # between template placement clicks
+    place_delay_s: float = 0.45  # between template placement clicks (GRD-safe)
+
 
     def to_dict(self) -> dict:
         return {
@@ -143,7 +144,7 @@ class Calibration:
             click_delay_s=float(d.get("click_delay_s", 0.45)),
             draw_timeout_s=float(d.get("draw_timeout_s", 8.0)),
             post_auto_wait_s=float(d.get("post_auto_wait_s", 1.5)),
-            place_delay_s=float(d.get("place_delay_s", 0.25)),
+            place_delay_s=float(d.get("place_delay_s", 0.45)),
         )
 
     def save(self, path: str) -> None:

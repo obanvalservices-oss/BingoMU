@@ -10,7 +10,7 @@ import pyautogui
 from .types import JEWEL_TYPES, Calibration, Rect
 
 pyautogui.FAILSAFE = True
-pyautogui.PAUSE = 0.05
+pyautogui.PAUSE = 0.08
 
 
 class Controller:
@@ -30,8 +30,11 @@ class Controller:
         if self._kill:
             return
         if self.dry_run:
-            print(f"[dry-run] click ({x}, {y})")
+            print(f"[dry-run] click ({x}, {y}) x{clicks}")
             return
+        # Move first so GRD registers hover, then click (more reliable remotely)
+        pyautogui.moveTo(x, y, duration=0.12)
+        time.sleep(0.12)
         pyautogui.click(x, y, clicks=clicks)
         time.sleep(self.cal.click_delay_s)
 
@@ -49,13 +52,14 @@ class Controller:
         if self.dry_run:
             print(f"[dry-run] click cell ({row},{col}) -> ({cx},{cy})")
             return
+        pyautogui.moveTo(cx, cy, duration=0.10)
+        time.sleep(0.08)
         pyautogui.click(cx, cy)
-        time.sleep(self.cal.place_delay_s if hasattr(self.cal, "place_delay_s") else self.cal.click_delay_s)
+        time.sleep(self.cal.place_delay_s)
 
     def click_jewel_btn(self, jewel: str) -> None:
         """Click right-panel jewel selector (B/S/CR/H/L/C)."""
         if jewel not in self.cal.jewel_btns:
-            # Fallback: estimate 6 slots stacked under auto_btn
             a = self.cal.auto_btn
             idx = list(JEWEL_TYPES).index(jewel) if jewel in JEWEL_TYPES else 0
             slot_h = max(18, a.h)
@@ -65,9 +69,22 @@ class Controller:
             return
         self.click_rect(self.cal.jewel_btns[jewel])
 
+    def select_jewel(self, jewel: str) -> None:
+        """
+        Reliably select a jewel type over GRD:
+        click twice with a settle pause (first jewel often misses if too fast).
+        """
+        self.click_jewel_btn(jewel)
+        self.wait(0.55)
+        self.click_jewel_btn(jewel)
+        self.wait(0.65)
+
     def click_top_left_box(self) -> None:
-        """Always select the upper-left / blue chest."""
+        """Fallback: calibrated boxes ROI center."""
         self.click_rect(self.cal.boxes)
+
+    def click_xy_box(self, x: int, y: int) -> None:
+        self.click_xy(x, y)
 
     def press_auto(self) -> None:
         self.click_rect(self.cal.auto_btn)
