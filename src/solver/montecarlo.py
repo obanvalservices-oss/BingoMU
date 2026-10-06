@@ -134,10 +134,31 @@ def choose_cell(
 ) -> tuple[Optional[tuple[int, int]], float, float, str]:
     """Unified chooser. draw_index is 0-based index of current draw."""
     remaining_after = max(0, total_draws - draw_index - 1)
-    if use_mc and remaining_after > 0 and len(board.candidates(jewel)) > 1:
+    cands = board.candidates(jewel)
+    # Late game / few options: heuristic prefers completing lines now
+    if len(cands) <= 1 or remaining_after <= 1:
+        cell, e, p = choose_heuristic(board, jewel)
+        return cell, e, p, "heuristic"
+    if use_mc and remaining_after > 0:
         cell, e, p = choose_monte_carlo(
             board, jewel, remaining_after, priors=priors, n_sims=n_sims
         )
+        # If MC and heuristic disagree, prefer the one that completes more lines now
+        h_cell, h_e, h_p = choose_heuristic(board, jewel)
+        if h_cell is not None and h_cell != cell:
+            from .scoring import all_lines, line_complete
+
+            def completes(cell_: tuple[int, int] | None) -> int:
+                if cell_ is None:
+                    return 0
+                b = board.clone()
+                b.mark(*cell_)
+                return sum(
+                    1 for ln in all_lines() if cell_ in ln and line_complete(b, ln)
+                )
+
+            if completes(h_cell) > completes(cell):
+                return h_cell, h_e, h_p, "heuristic_line"
         return cell, e, p, "monte_carlo"
     cell, e, p = choose_heuristic(board, jewel)
     return cell, e, p, "heuristic"

@@ -443,14 +443,11 @@ class BingoBot:
                 use_mc=self.use_mc,
                 n_sims=min(self.n_sims, 400),
             )
-            # Prefer blinking cell only when board-blink was the detection source
-            if (
-                blink_cell is not None
-                and blink_cell in cands
-                and "board" in (self.draw_detector.last_source or "")
-            ):
+            # Blink only detects WHICH jewel — never override strategy.
+            # (board_blink_cell was picking the loudest flash, not the best line.)
+            if cell is None and blink_cell is not None and blink_cell in cands:
                 cell = blink_cell
-                method = "board_blink_cell"
+                method = "blink_fallback"
             elif cell is None and blink_cell is not None:
                 cell = blink_cell
                 method = "blink_fallback"
@@ -646,27 +643,27 @@ class BingoBot:
                 f"cellΔ={cell_d:.1f} blue={blue} "
                 f"cStreak={counter_streak} dStreak={draw_streak} cellStreak={cell_streak}"
             )
-            # MUST see counter or draw icon advance — cell glow alone lied on draw 9
+            # MUST see counter or draw icon advance — cell glow alone lied (Soul false OK)
             if counter_streak >= 2 or draw_streak >= 2:
                 try:
                     self.marked_detector.update_cell_baseline(frame, *cell)
                 except Exception:
                     pass
                 return True
-            # Strong cell change + any score/draw nudge
-            if cell_streak >= 2 and cell_d >= 6.0 and (cd >= 0.8 or dd >= 1.2 or blue):
+            # Strong cell change only if score/draw also clearly moved (not residual flash)
+            if (
+                cell_streak >= 3
+                and cell_d >= 10.0
+                and blue
+                and cd >= 1.5
+                and dd >= 2.0
+            ):
                 try:
                     self.marked_detector.update_cell_baseline(frame, *cell)
                 except Exception:
                     pass
                 return True
-            # Blue mark appeared and draw icon moved a little (last draws / GRD lag)
-            if blue and cell_streak >= 3 and (cd >= 0.7 or dd >= 0.9):
-                try:
-                    self.marked_detector.update_cell_baseline(frame, *cell)
-                except Exception:
-                    pass
-                return True
+            # Do not accept blue+cell alone — caused false Soul mark then stuck retry
             time.sleep(0.2)
 
         print("    reintento de clic...")
