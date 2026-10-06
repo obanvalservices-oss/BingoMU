@@ -418,8 +418,9 @@ class BingoBot:
                     self.draw_detector.set_board(record.board)
 
             record.draws.append(jewel)
-            # Live sync: drop cells already blue so we don't click dead marks
-            self._sync_marks_from_vision(record.board)
+            # Only sync marks that are clearly solid blue — NOT flashing candidates
+            # (draw highlight looks blue and was wiping H/L candidates)
+            self._sync_marks_from_vision(record.board, min_ratio=0.35)
             cands = record.board.candidates(jewel)
             print(
                 f"  Detectado: {jewel} ({JEWEL_NAMES.get(jewel, jewel)}) "
@@ -534,7 +535,9 @@ class BingoBot:
         self.state = GameState.ACCEPT_REWARD
         return True
 
-    def _sync_marks_from_vision(self, board: BoardState) -> None:
+    def _sync_marks_from_vision(
+        self, board: BoardState, min_ratio: float = 0.20
+    ) -> None:
         """Mark as used any cell that already looks clearly blue on screen."""
         import cv2
 
@@ -558,8 +561,7 @@ class BingoBot:
                 ratio = cv2.countNonZero(blue) / float(
                     patch.shape[0] * patch.shape[1] or 1
                 )
-                # Stricter than cell_marked_blue — avoid false locks mid-game
-                if ratio >= 0.20:
+                if ratio >= min_ratio:
                     board.marked[r][c] = True
 
     def _order_by_blink(
@@ -587,12 +589,10 @@ class BingoBot:
         """
         Click cell and verify the GAME advanced.
         Do NOT trust classify() flipping (B↔CR noise) or blue_glow alone.
+        Do NOT skip on blue-before-click: draw flash looks blue and blocked all H.
         """
-        # Skip cells already blue (resume / prior miss)
-        probe = self.frame()
-        if self.marked_detector.cell_marked_blue(probe, *cell):
-            print(f"    skip R{cell[0]+1}C{cell[1]+1}: ya blue en pantalla")
-            record.board.marked[cell[0]][cell[1]] = True
+        if record.board.marked[cell[0]][cell[1]]:
+            print(f"    skip R{cell[0]+1}C{cell[1]+1}: ya marcada en board state")
             return False
 
         self.controller.focus_panel()
