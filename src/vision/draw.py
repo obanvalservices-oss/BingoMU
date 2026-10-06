@@ -32,7 +32,7 @@ class DrawDetector:
         history: int = 14,
         blink_threshold: float = 8.0,
         cell_blink_threshold: float = 3.5,
-        margin_ratio: float = 1.15,
+        margin_ratio: float = 1.08,
     ) -> None:
         self.cal = calibration
         self.classifier = classifier or JewelClassifier(min_score=0.04)
@@ -146,9 +146,8 @@ class DrawDetector:
         blstack = np.stack(list(self.cell_blue), axis=0)
         bright_range = bstack.max(axis=0) - bstack.min(axis=0)
         blue_range = blstack.max(axis=0) - blstack.min(axis=0)
-        blue_peak = blstack.max(axis=0)
-        # Weighted: glow flash matters most for "titilando"
-        return bright_range + 40.0 * blue_range + 25.0 * blue_peak
+        # Prefer CHANGE over static blue peak (static peak inflated grey H cells)
+        return bright_range * 1.0 + 55.0 * blue_range
 
     def _jewel_blink_scores(self, board: BoardState) -> dict[str, float]:
         act = self._activity_map()
@@ -182,7 +181,15 @@ class DrawDetector:
         second_v = ranked[1][1] if len(ranked) > 1 else 0.0
         if best_v < self.cell_blink_threshold:
             return None
-        if second_v > 0 and best_v < second_v * self.margin_ratio:
+        gap = best_v - second_v
+        # Soft margin: C vs H often close when Chaos is flashing
+        ok = (
+            second_v <= 0
+            or best_v >= second_v * self.margin_ratio
+            or gap >= 0.8
+            or (best_v >= 9.0 and gap >= 0.25)
+        )
+        if not ok:
             return None
         self._last_conf = best_v / max(second_v, 0.5)
         self._last_source = "board_blink"

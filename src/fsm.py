@@ -408,8 +408,14 @@ class BingoBot:
                 f"cellΔ={cell_d:.1f} blue={blue} "
                 f"cStreak={counter_streak} dStreak={draw_streak} cellStreak={cell_streak}"
             )
-            # Real advance: counter moved, draw icon pixels changed, or cell lit up stably
-            if counter_streak >= 2 or draw_streak >= 2 or (cell_streak >= 2 and (blue or cell_d >= 4.0)):
+            # Require real pixel change on the cell — blue alone was false-positive
+            if counter_streak >= 2 or draw_streak >= 2:
+                try:
+                    self.marked_detector.update_cell_baseline(frame, *cell)
+                except Exception:
+                    pass
+                return True
+            if cell_streak >= 3 and cell_d >= 2.5 and (blue or cell_d >= 5.0):
                 try:
                     self.marked_detector.update_cell_baseline(frame, *cell)
                 except Exception:
@@ -430,7 +436,7 @@ class BingoBot:
         )
         blue = self.marked_detector.cell_marked_blue(frame, *cell)
         print(f"    retry check: counterΔ={cd:.1f} drawΔ={dd:.1f} cellΔ={cell_d:.1f} blue={blue}")
-        return dd >= 2.5 or cd >= 1.5 or (blue and cell_d >= 3.0)
+        return dd >= 2.5 or cd >= 1.5 or (cell_d >= 3.0 and blue)
 
     def _wait_for_jewel(
         self,
@@ -438,42 +444,57 @@ class BingoBot:
         board: Optional[BoardState] = None,
         avoid: Optional[str] = None,
     ) -> Optional[str]:
+        """Vote over recent board_blink readings — C vs H often alternate frame-to-frame."""
         timeout = timeout if timeout is not None else self.cal.draw_timeout_s
         deadline = time.time() + timeout
-        last: Optional[str] = None
-        stable = 0
+        votes: list[str] = []
         last_log = 0.0
         while time.time() < deadline and not self.controller.stopped:
             frame = self.frame()
-            jewel = self.draw_detector.detect(frame, board=board)
+            # Always push metrics
+            self.draw_detector.push(frame)
+            jewel = self.draw_detector.detect_from_board_blink(board)
             now = time.time()
             if now - last_log >= 1.5:
                 print(f"  ... {self.draw_detector.debug_snapshot(board)}")
                 last_log = now
             if jewel and avoid and jewel == avoid:
-                # Still showing previous jewel — wait for next draw
-                # BUT if board shows a DIFFERENT jewel flashing, take that
-                board_only = self.draw_detector.detect_from_board_blink(board)
-                if board_only and board_only != avoid:
-                    jewel = board_only
-                else:
-                    stable = 0
-                    last = None
-                    time.sleep(0.12)
-                    continue
-            if jewel and jewel == last:
-                stable += 1
-                src = self.draw_detector.last_source or ""
-                # Prefer board_blink strongly; never accept static ROI alone
-                if "board" in src and stable >= 2:
-                    return jewel
-                blink = self.draw_detector.blink_score()
-                if stable >= 4 and blink >= 5.0 and "roi" in src:
-                    return jewel
-            else:
-                stable = 1 if jewel else 0
-                last = jewel
-            time.sleep(0.12)
+                time.sleep(0.1)
+                continue
+            if jewel:
+                votes.append(jewel)
+                votes = votes[-12:]
+                if len(votes) >= 5:
+                    from collections import Counter
+
+                    counts = Counter(votes[-8:])
+                    top, n = counts.most_common(1)[0]
+                    second_n = counts.most_common(2)[1][1] if len(counts) > 1 else 0
+                    scores = self.draw_detector._last_scores or {}
+                    # Tie-break C vs H using live board scores
+                    if n >= 3 and n > second_n:
+                        self.draw_detector._last_source = "board_vote"
+                        print(f"  vote → {top} ({n}/8) scores={scores}")
+                        return top
+                    if n >= 3 and n == second_n:
+                        contenders = [j for j, c in counts.items() if c == n]
+                        top = max(contenders, key=lambda j: scores.get(j, 0.0))
+                        self.draw_detector._last_source = "board_vote_tiebreak"
+                        print(f"  vote-tie → {top} scores={scores}")
+                        return top
+            time.sleep(0.1)
+        # Last chance: take current best score even with soft margin
+        if board is not None and self.draw_detector._last_scores:
+            ranked = sorted(
+                self.draw_detector._last_scores.items(),
+                key=lambda kv: kv[1],
+                reverse=True,
+            )
+            best_j, best_v = ranked[0]
+            second_v = ranked[1][1] if len(ranked) > 1 else 0.0
+            if best_j != avoid and best_v >= 8.0 and best_v >= second_v:
+                print(f"  soft-pick → {best_j} ({best_v:.1f} vs {second_v:.1f})")
+                return best_j
         return None
 
     def _accept_reward(self) -> bool:
