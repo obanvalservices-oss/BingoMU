@@ -1,0 +1,11 @@
+{
+  "name": "chatgpt_default",
+  "grid": [
+    ["S", "H", "B", "L", "H"],
+    ["CR", "C", "C", "L", "C"],
+    ["B", "H", "FREE", "S", "C"],
+    ["B", "CR", "CR", "B", "L"],
+    ["S", "CR", "H", "S", "L"]
+  ],
+  "notes": "Editable Jewel Bingo placement. Center must be FREE; 4 of each B/S/CR/H/L/C. Edit in the Panel or this file."
+}

@@ -9,6 +9,7 @@ venv/
 
 # Runtime / local machine
 logs/*.jsonl
+logs/learned_priors.json
 logs/replay_last.json
 !logs/.gitkeep
 

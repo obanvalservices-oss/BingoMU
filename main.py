@@ -13,8 +13,8 @@ if str(ROOT) not in sys.path:
 
 from src.control import install_kill_hotkey
 from src.fsm import BingoBot
-from src.patterns import format_template, validate_template
-from src.types import TEMPLATE_CHATGPT, Calibration, PlacementMode
+from src.patterns import format_template, load_active_template, validate_template
+from src.types import Calibration, PlacementMode
 
 
 def default_cal_path() -> Path:
@@ -67,7 +67,7 @@ def interactive_mode() -> PlacementMode:
     print("  [1] AUTO      — click Auto-Place (random board)")
     print("  [2] TEMPLATE  — place ChatGPT pattern manually (recommended)")
     print()
-    print(format_template(TEMPLATE_CHATGPT))
+    print(format_template(load_active_template()))
     print()
     choice = input("Choose 1 or 2 [default 2]: ").strip() or "2"
     return PlacementMode.AUTO if choice == "1" else PlacementMode.TEMPLATE
@@ -124,7 +124,7 @@ def pre_start_countdown(seconds: float, resume: bool = False) -> None:
 def main() -> int:
     args = parse_args()
     if args.show_pattern:
-        errs = validate_template(TEMPLATE_CHATGPT)
+        errs = validate_template(load_active_template())
         print(format_template())
         print("valid" if not errs else "INVALID: " + "; ".join(errs))
         return 0 if not errs else 1
@@ -156,6 +156,7 @@ def main() -> int:
         template_dir=str(ROOT / "assets" / "templates"),
         resume=args.resume,
         resume_left=resume_left,
+        template=load_active_template(),
     )
     stop_listener = install_kill_hotkey(bot.controller, keys=("esc", "f8"))
     if args.resume:

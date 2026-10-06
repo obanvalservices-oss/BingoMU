@@ -20,6 +20,7 @@ from .heuristic import choose_heuristic, center_candidates, cell_potential
 @dataclass
 class JewelPriors:
     probs: dict[str, float] = field(default_factory=dict)
+    learned: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.probs:
@@ -37,9 +38,17 @@ class JewelPriors:
 
     @classmethod
     def from_logs(cls, log_dir: str = "logs") -> "JewelPriors":
-        return cls(empirical_jewel_priors(log_dir))
+        from ..history import load_learned_priors
 
-    def sample(self, rng: random.Random) -> str:
+        learned = load_learned_priors()
+        overall = learned.get("overall") or empirical_jewel_priors(log_dir)
+        return cls(probs=dict(overall), learned=learned)
+
+    def sample(self, rng: random.Random, draw_index: int = 0, prev: str | None = None) -> str:
+        from ..history import sample_jewel_for_draw
+
+        if self.learned and self.learned.get("games", 0) >= 2:
+            return sample_jewel_for_draw(draw_index, prev, self.learned, rng)
         jewels = list(JEWEL_TYPES)
         weights = [self.probs[j] for j in jewels]
         return rng.choices(jewels, weights=weights, k=1)[0]
@@ -62,11 +71,13 @@ def _simulate_rest(
     draws_left: int,
     priors: JewelPriors,
     rng: random.Random,
+    start_draw_index: int = 0,
 ) -> int:
-    """Fast playout using center-first picks."""
+    """Fast playout using center-first picks + learned sequence priors."""
     b = board.clone()
-    for _ in range(draws_left):
-        jewel = priors.sample(rng)
+    prev: str | None = None
+    for k in range(draws_left):
+        jewel = priors.sample(rng, draw_index=start_draw_index + k, prev=prev)
         cands = b.candidates(jewel)
         if not cands:
             found = False
@@ -79,6 +90,7 @@ def _simulate_rest(
             if not found:
                 break
         b.mark(*_pick_center_first(b, cands))
+        prev = jewel
     return score_board(b)
 
 
@@ -111,7 +123,15 @@ def choose_monte_carlo(
         for _ in range(per):
             b = board.clone()
             b.mark(*cell)
-            scores.append(_simulate_rest(b, draws_remaining_after, priors, rng))
+            scores.append(
+                _simulate_rest(
+                    b,
+                    draws_remaining_after,
+                    priors,
+                    rng,
+                    start_draw_index=DRAWS_PER_GAME - draws_remaining_after,
+                )
+            )
         e = sum(scores) / len(scores)
         p = sum(1 for s in scores if s >= TARGET_SCORE) / len(scores)
         # Prefer completing center now, then P(1000), then E[score]

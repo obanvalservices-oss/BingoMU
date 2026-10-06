@@ -36,9 +36,18 @@ class GameLogger:
             ],
             "final_score": record.final_score,
             "target_met": record.target_met,
+            "placement_mode": record.placement_mode,
         }
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(payload) + "\n")
+        # Durable history + rebuild learned priors for next games
+        try:
+            from .history import append_game_history, rebuild_learned_priors
+
+            append_game_history(record)
+            rebuild_learned_priors()
+        except Exception as e:
+            self.log_event("history_write_failed", error=str(e))
 
     def log_event(self, event: str, **kwargs: Any) -> None:
         payload = {"ts": datetime.now(timezone.utc).isoformat(), "event": event, **kwargs}

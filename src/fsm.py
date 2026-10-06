@@ -4,21 +4,25 @@ from __future__ import annotations
 
 import time
 from collections import Counter
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 
 from .capture import ScreenCapture, crop
 from .control import Controller
 from .logger import GameLogger
-from .patterns import chatgpt_board, format_template, placement_plan
+from .patterns import (
+    board_from_template,
+    format_template,
+    load_active_template,
+    placement_plan,
+)
 from .solver.montecarlo import JewelPriors, choose_cell
 from .solver.scoring import score_board
 from .types import (
     DRAWS_PER_GAME,
     JEWEL_NAMES,
     TARGET_SCORE,
-    TEMPLATE_CHATGPT,
     BoardState,
     Calibration,
     DecisionRecord,
@@ -46,6 +50,8 @@ class BingoBot:
         template_dir: str | None = "assets/templates",
         resume: bool = False,
         resume_left: int | None = None,
+        template: list[list[str]] | None = None,
+        on_status: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.cal = calibration
         self.placement_mode = placement_mode
@@ -55,6 +61,8 @@ class BingoBot:
         self.max_games = max_games if max_games is not None else (1 if resume else None)
         self.resume = resume
         self.resume_left = resume_left
+        self.template = template if template is not None else load_active_template()
+        self.on_status = on_status
         self.capture = ScreenCapture()
         self.controller = Controller(calibration, dry_run=dry_run)
         self.classifier = JewelClassifier(template_dir=template_dir)
@@ -89,7 +97,7 @@ class BingoBot:
         )
         print(f"Placement mode: {self.placement_mode.value.upper()}")
         if self.placement_mode == PlacementMode.TEMPLATE:
-            print("ChatGPT template:\n" + format_template())
+            print("Active template:\n" + format_template(self.template))
         if self.resume:
             print(
                 "\n=== RESUME: juego YA en curso ===\n"
@@ -145,7 +153,7 @@ class BingoBot:
         frame = self.frame()
 
         if self.placement_mode == PlacementMode.TEMPLATE:
-            board = chatgpt_board()
+            board = board_from_template(self.template)
         else:
             board = self.board_reader.read(frame)
 
@@ -273,8 +281,8 @@ class BingoBot:
             self.controller.park_mouse()
             self.controller.wait(0.4)
         else:
-            self.logger.log_event("place_template", pattern="chatgpt")
-            print("Placing jewels: TEMPLATE (ChatGPT pattern) — slow/GRD-safe")
+            self.logger.log_event("place_template", pattern="active")
+            print("Placing jewels: TEMPLATE (active pattern) — slow/GRD-safe")
             # Start UI still settling — especially critical before first jewel (Bless)
             self.controller.wait(1.2)
             self._place_template()
@@ -285,7 +293,7 @@ class BingoBot:
 
     def _place_template(self) -> None:
         """Select each jewel from the right panel, then click its cells (slow + re-select)."""
-        for jewel, cells in placement_plan(TEMPLATE_CHATGPT):
+        for jewel, cells in placement_plan(self.template):
             if self.controller.stopped:
                 return
             name = JEWEL_NAMES.get(jewel, jewel)
@@ -307,7 +315,7 @@ class BingoBot:
     def _read_board_and_pick_box(self) -> bool:
         frame = self.frame()
         if self.placement_mode == PlacementMode.TEMPLATE:
-            board = chatgpt_board()
+            board = board_from_template(self.template)
             try:
                 seen = self.board_reader.read(frame)
                 mismatches = 0

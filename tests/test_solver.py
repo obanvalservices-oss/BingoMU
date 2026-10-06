@@ -53,6 +53,12 @@ class TestPattern(unittest.TestCase):
             self.assertEqual(len(cells), 4, jewel)
             self.assertIn(jewel, JEWEL_TYPES)
 
+    def test_load_active_roundtrip(self):
+        from src.patterns import load_active_template, validate_template as vt
+
+        tmpl = load_active_template()
+        self.assertEqual(vt(tmpl), [])
+
 
 class TestScoring(unittest.TestCase):
     def test_center_free_marked(self):
