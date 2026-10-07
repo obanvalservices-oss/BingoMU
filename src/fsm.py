@@ -94,6 +94,8 @@ class BingoBot:
         self._active: Optional[GameRecord] = None
         self._draws_done_offset = 0
         self._frame_i = 0
+        # Consecutive games that never got a first draw → out of cards
+        self._no_draw_streak = 0
 
     def frame(self) -> np.ndarray:
         return self.capture.grab()
@@ -111,6 +113,19 @@ class BingoBot:
         self._frame_i += 1
         if self._frame_i % 40 == 0:
             gc.collect(0)
+
+    def _cleanup_vision(self) -> None:
+        """Drop frame buffers so RAM drops when stopping / no-cards."""
+        try:
+            self.draw_detector.reset()
+        except Exception:
+            pass
+        try:
+            self.marked_detector._baseline = None
+        except Exception:
+            pass
+        self._active = None
+        gc.collect()
 
     def stop(self) -> None:
         self.controller.request_stop()
@@ -134,20 +149,27 @@ class BingoBot:
             self.state = GameState.CALIBRATE  # reuse as resume entry
         else:
             self.state = GameState.PRESS_START
-        while not self.controller.stopped:
-            if self.max_games is not None and self.games_played >= self.max_games:
-                self.logger.log_event("max_games_reached", n=self.games_played)
-                break
+        try:
+            while not self.controller.stopped:
+                if self.max_games is not None and self.games_played >= self.max_games:
+                    self.logger.log_event("max_games_reached", n=self.games_played)
+                    break
+                try:
+                    cont = self._step()
+                except Exception as exc:
+                    self.logger.log_event("error", error=str(exc), state=self.state.name)
+                    self.state = GameState.ERROR
+                    break
+                if not cont:
+                    break
+        finally:
+            self._cleanup_vision()
             try:
-                cont = self._step()
-            except Exception as exc:
-                self.logger.log_event("error", error=str(exc), state=self.state.name)
-                self.state = GameState.ERROR
-                break
-            if not cont:
-                break
-        self.capture.close()
-        self.logger.log_event("bot_stop", games=self.games_played)
+                self.capture.close()
+            except Exception:
+                pass
+            self.logger.log_event("bot_stop", games=self.games_played)
+            gc.collect()
 
     def _step(self) -> bool:
         s = self.state
@@ -164,9 +186,12 @@ class BingoBot:
         if s == GameState.ACCEPT_REWARD:
             return self._accept_reward()
         if s == GameState.NO_CARDS:
-            self.logger.log_event("no_cards")
+            self.logger.log_event("no_cards", games=self.games_played)
+            self._say("SIN CARDS — paro limpio (no reintento Start).")
+            self._cleanup_vision()
             return False
         if s == GameState.ERROR:
+            self._cleanup_vision()
             return False
         if s == GameState.IDLE:
             self.state = GameState.PRESS_START
@@ -372,10 +397,13 @@ class BingoBot:
 
         self.marked_detector.set_baseline(frame)
         self.draw_detector.reset()
+        # Don't dump full board into jsonl every game (log file + RAM on long runs)
         self.logger.log_event(
             "board_read",
-            board=board.to_dict(),
             placement_mode=self.placement_mode.value,
+            labeled=self.board_reader.labeled_count(board)
+            if self.placement_mode == PlacementMode.AUTO
+            else 24,
         )
         print("Board locked:")
         for row in board.cells:
@@ -455,8 +483,13 @@ class BingoBot:
             )
             if self.controller.stopped:
                 return False
-            timeout = 28.0 if draw_i == start_i else 18.0
-            print("Esperando joya del sorteo...")
+            # After several games, first-draw wait is shorter so "no cards"
+            # fails fast instead of chewing RAM for 28s+ of grabs.
+            if draw_i == start_i:
+                timeout = 14.0 if self.games_played > 0 else 28.0
+            else:
+                timeout = 18.0
+            self._say("Esperando joya del sorteo...")
             self.controller.park_mouse()
             jewel = self._wait_for_jewel(
                 timeout=timeout,
@@ -465,13 +498,25 @@ class BingoBot:
             )
             if jewel is None:
                 self.logger.log_event("draw_timeout", draw_index=draw_i, completed=completed)
-                print(
-                    "  TIMEOUT detectando joya sorteada.\n"
-                    f"  debug: {self.draw_detector.debug_snapshot(record.board)}\n"
-                    "  Tip: recalibra el punto 'CURRENT DRAWN JEWEL' (icono del sorteo)."
+                self._say("  TIMEOUT detectando joya sorteada.")
+                self._vprint(
+                    f"  debug: {self.draw_detector.debug_snapshot(record.board)}"
                 )
+                # No draw at all this game → almost always out of cards / wrong screen.
+                # Do NOT loop Start forever (that was the post-cards RAM spike).
+                if completed <= start_i:
+                    self._no_draw_streak += 1
+                    self._say(
+                        f"  Ningún sorteo tras Start "
+                        f"(racha sin draw={self._no_draw_streak})."
+                    )
+                    if self._no_draw_streak >= 1:
+                        self.state = GameState.NO_CARDS
+                        return False
+                    self.state = GameState.ERROR
+                    return False
                 if completed < 10:
-                    print(
+                    self._say(
                         "  SAFETY STOP: pocos sorteos completados "
                         f"({completed}). NO reinicio automático."
                     )
@@ -601,11 +646,17 @@ class BingoBot:
             draws=completed,
             placement_mode=self.placement_mode.value,
         )
-        print(
+        self._say(
             f"Game done: draws={completed} score={record.final_score} "
             f"target={'YES' if record.target_met else 'no'}"
         )
-        self.priors = JewelPriors.from_logs(str(self.logger.log_dir))
+        self._no_draw_streak = 0  # real game completed
+        try:
+            self.priors = JewelPriors.from_logs(str(self.logger.log_dir))
+        except Exception:
+            pass
+        self.draw_detector.reset()
+        gc.collect(0)
         self.state = GameState.ACCEPT_REWARD
         return True
 
@@ -849,8 +900,13 @@ class BingoBot:
         self.resume = False
         self.resume_left = None
         self._draws_done_offset = 0
+        self._cleanup_vision()
         if self.max_games is not None and self.games_played >= self.max_games:
             self._say(f"Max cards alcanzado ({self.games_played}).")
             return False
+        if self._no_draw_streak >= 1:
+            self.state = GameState.NO_CARDS
+            return False
+        self._say("Siguiente card → Start...")
         self.state = GameState.PRESS_START
         return True
