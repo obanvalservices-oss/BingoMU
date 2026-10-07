@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
 ERROR_LOG = ROOT / "panel_error.log"
 BUILD_LOG = ROOT / "panel_build.log"
 CAL_PATH = ROOT / "assets" / "calibration" / "default.json"
-PANEL_VERSION = "2026-10-07-v11"
+PANEL_VERSION = "2026-10-07-v12"
 
 # Mac dark window → titles must be white or they vanish.
 WHITE = "#ffffff"
@@ -199,6 +199,9 @@ class JewelBingoPanel(tk.Tk):
         self.btn_stop = self._btn(row, "STOP", self._stop, width=10)
         self.btn_stop.configure(state="disabled")
         self.btn_stop.pack(side="left", padx=(0, 6))
+        self._btn(row, "Calibrar", self._run_calibrate, width=10).pack(
+            side="left", padx=(0, 6)
+        )
         self._btn(row, "Ver calibracion", self._show_calibration, width=14).pack(
             side="left", padx=(0, 6)
         )
@@ -408,9 +411,43 @@ class JewelBingoPanel(tk.Tk):
         n = load_learned_priors().get("games", 0)
         self.stats_var.set(f"{history_summary()} | priors n={n}")
 
+    def _run_calibrate(self) -> None:
+        """Launch guided wizard → saves assets/calibration/default.json."""
+        wizard = ROOT / "tools" / "calibrate_wizard.py"
+        if not wizard.exists():
+            messagebox.showerror("Falta wizard", str(wizard))
+            return
+        ok = messagebox.askokcancel(
+            "Calibrar",
+            "Vas a recalibrar.\n\n"
+            "1) Pon Chrome Remote Desktop con Jewel Bingo visible\n"
+            "2) Acepta — hay 8 segundos de cuenta atras y se toma screenshot\n"
+            "3) Click en cada punto que pida (+ zoom, ENTER al terminar)\n\n"
+            "Se guarda en assets/calibration/default.json",
+        )
+        if not ok:
+            return
+        self._append(
+            "CALIBRAR: cuenta atras 8s — deja RD al frente | "
+            "+ zoom | ENTER guarda | q cancela\n"
+        )
+        env = os.environ.copy()
+        env["TK_SILENCE_DEPRECATION"] = "1"
+        subprocess.Popen(
+            [
+                sys.executable, "-u", str(wizard),
+                "--out", str(CAL_PATH),
+                "--delay", "8",
+            ],
+            cwd=str(ROOT), env=env,
+        )
+
     def _show_calibration(self) -> None:
         if not CAL_PATH.exists():
-            messagebox.showerror("Sin calibracion", str(CAL_PATH))
+            messagebox.showerror(
+                "Sin calibracion",
+                f"No hay {CAL_PATH}\n\nPulsa CALIBRAR primero.",
+            )
             return
         self._append(
             "Overlay TRANSPARENTE — ves Chrome debajo | SPACE=ocultar para arrastrar "
