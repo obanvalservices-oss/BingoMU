@@ -1,8 +1,9 @@
 """
-JewelBingo Panel v6 — Mac-stable UI (no fragile Canvas scroll tricks).
+JewelBingo Panel v7 — Mac Aqua–safe UI.
 
-Fix: v5 crashed with TclError invalid command name "130" on macOS Tk.
-Uses simple pack layout + Canvas only for colored action buttons.
+macOS CommandLineTools Tk ignores Label bg/fg on dark windows, so custom-colored
+Labels vanish (black text on #1a1a1a). v7 uses a light theme + native tk.Button /
+LabelFrame so every control stays visible.
 """
 
 from __future__ import annotations
@@ -13,12 +14,12 @@ import sys
 import threading
 import traceback
 from pathlib import Path
+from typing import Optional
 
 os.environ.setdefault("TK_SILENCE_DEPRECATION", "1")
 
 import tkinter as tk
 from tkinter import messagebox
-from typing import Callable, Optional
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -27,20 +28,17 @@ if str(ROOT) not in sys.path:
 ERROR_LOG = ROOT / "panel_error.log"
 BUILD_LOG = ROOT / "panel_build.log"
 CAL_PATH = ROOT / "assets" / "calibration" / "default.json"
-PANEL_VERSION = "2026-10-07-v6"
+PANEL_VERSION = "2026-10-07-v7"
 
-WIN = "#1a1a1a"
-CARD = "#f0f0f0"
+BG = "#e8e8e8"
+CARD = "#ffffff"
 INK = "#111111"
-WHITE = "#ffffff"
-GREEN = "#00c853"
-RED = "#d50000"
-BLUE = "#0091ea"
-ORANGE = "#ff6d00"
-PURPLE = "#aa00ff"
-MUTED = "#444444"
-LOG_BG = "#000000"
-LOG_FG = "#00e676"
+MUTED = "#555555"
+OK = "#1b5e20"
+WARN = "#e65100"
+BAD = "#b71c1c"
+LOG_BG = "#111111"
+LOG_FG = "#7CFC00"
 
 
 def _crash(where: str, exc: BaseException) -> None:
@@ -53,67 +51,21 @@ def _crash(where: str, exc: BaseException) -> None:
 
 
 def _blog(msg: str) -> None:
-    line = msg
     try:
         with BUILD_LOG.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
+            f.write(msg + "\n")
     except Exception:
         pass
-    print(line, flush=True)
-
-
-class ActionButton(tk.Frame):
-    """Colored button that works on macOS (Label, not native aqua Button)."""
-
-    def __init__(
-        self,
-        parent: tk.Misc,
-        text: str,
-        command: Callable[[], None],
-        bg: str,
-        fg: str = WHITE,
-        padx: int = 18,
-        pady: int = 12,
-        font: tuple = ("Helvetica", 14, "bold"),
-    ) -> None:
-        super().__init__(parent, bg="#000000", padx=2, pady=2)
-        self._command = command
-        self._enabled = True
-        self._bg = bg
-        self._fg = fg
-        self._lbl = tk.Label(
-            self,
-            text=text,
-            bg=bg,
-            fg=fg,
-            font=font,
-            padx=padx,
-            pady=pady,
-            cursor="hand2",
-        )
-        self._lbl.pack()
-        self._lbl.bind("<ButtonRelease-1>", self._click)
-        self.bind("<ButtonRelease-1>", self._click)
-
-    def _click(self, _event=None) -> None:
-        if self._enabled:
-            self._command()
-
-    def set_enabled(self, enabled: bool) -> None:
-        self._enabled = enabled
-        if enabled:
-            self._lbl.configure(bg=self._bg, fg=self._fg, cursor="hand2")
-        else:
-            self._lbl.configure(bg="#666666", fg="#cccccc", cursor="arrow")
+    print(msg, flush=True)
 
 
 class JewelBingoPanel(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(f"JewelBingo [{PANEL_VERSION}]")
-        self.configure(bg=WIN)
-        self.geometry("880x780")
-        self.minsize(760, 600)
+        self.configure(bg=BG)
+        self.geometry("900x820")
+        self.minsize(780, 640)
 
         self._proc: Optional[subprocess.Popen] = None
         self._running = False
@@ -149,7 +101,7 @@ class JewelBingoPanel(tk.Tk):
         self.after(100, self._front)
         self._append(
             f"OK {PANEL_VERSION}\n"
-            "1 START/STOP/calibracion  2 modo  3 quedan  4 patron  5 log\n"
+            "1 START/STOP  2 modo  3 quedan  4 patron  5 log\n"
         )
 
     def _front(self) -> None:
@@ -159,92 +111,97 @@ class JewelBingoPanel(tk.Tk):
         except Exception:
             pass
 
-    def _section(self, parent: tk.Misc, title: str, color: str) -> tk.Frame:
-        wrap = tk.Frame(parent, bg=WIN)
-        wrap.pack(fill="x", pady=(0, 8))
-        tk.Label(
-            wrap,
-            text=f"  {title}",
-            bg=color,
-            fg=WHITE if color != ORANGE else INK,
-            font=("Helvetica", 12, "bold"),
-            anchor="w",
+    def _btn(self, parent: tk.Misc, text: str, cmd, *, width: int = 12) -> tk.Button:
+        return tk.Button(
+            parent,
+            text=text,
+            command=cmd,
+            width=width,
+            font=("Helvetica", 13, "bold"),
+            padx=8,
             pady=6,
-        ).pack(fill="x")
-        box = tk.Frame(wrap, bg="#000000", padx=2, pady=2)
-        box.pack(fill="x")
-        inner = tk.Frame(box, bg=CARD, padx=12, pady=10)
-        inner.pack(fill="x")
-        return inner
+        )
 
     def _build(self) -> None:
         from src.types import JEWEL_NAMES, JEWEL_TYPES
 
-        root = tk.Frame(self, bg=WIN, padx=10, pady=8)
+        # Plain pack only — no Canvas (Mac CLT Tk crashes / hides custom widgets).
+        root = tk.Frame(self, bg=BG, padx=12, pady=10)
         root.pack(fill="both", expand=True)
 
         # Header
-        head = tk.Frame(root, bg=WIN)
+        head = tk.Frame(root, bg=BG)
         head.pack(fill="x", pady=(0, 8))
         tk.Label(
-            head, text="JewelBingo", bg=WIN, fg=WHITE, font=("Helvetica", 20, "bold"),
+            head, text="JewelBingo", bg=BG, fg=INK,
+            font=("Helvetica", 22, "bold"),
         ).pack(side="left")
         tk.Label(
-            head, text=f"  {PANEL_VERSION}  ", bg=ORANGE, fg=INK,
-            font=("Helvetica", 11, "bold"),
-        ).pack(side="left", padx=8)
+            head, text=f"  {PANEL_VERSION}  ", bg="#ffcc80", fg=INK,
+            font=("Helvetica", 11, "bold"), relief="solid", bd=1,
+        ).pack(side="left", padx=10)
         self.status_lbl = tk.Label(
-            head, text="LISTO", bg=WIN, fg=GREEN, font=("Helvetica", 12, "bold"),
+            head, text="LISTO", bg=BG, fg=OK, font=("Helvetica", 13, "bold"),
         )
         self.status_lbl.pack(side="right")
 
         # 1 Control
         _blog("control")
-        c1 = self._section(root, "1. CONTROL", "#1b5e20")
+        c1 = tk.LabelFrame(
+            root, text=" 1. CONTROL ", bg=CARD, fg=INK,
+            font=("Helvetica", 12, "bold"), padx=10, pady=8,
+        )
+        c1.pack(fill="x", pady=(0, 8))
         row = tk.Frame(c1, bg=CARD)
         row.pack(fill="x")
-        self.btn_start = ActionButton(row, "START", self._start, GREEN, INK)
+        self.btn_start = self._btn(row, "START", self._start, width=10)
         self.btn_start.pack(side="left", padx=(0, 8))
-        self.btn_stop = ActionButton(row, "STOP", self._stop, RED, WHITE)
-        self.btn_stop.set_enabled(False)
+        self.btn_stop = self._btn(row, "STOP", self._stop, width=10)
+        self.btn_stop.configure(state="disabled")
         self.btn_stop.pack(side="left", padx=(0, 8))
-        ActionButton(
-            row, "Ver calibracion", self._show_calibration, BLUE, WHITE,
-            font=("Helvetica", 12, "bold"),
-        ).pack(side="left", padx=(0, 8))
-        tk.Label(row, text="ESC/F8 = stop", bg=CARD, fg=MUTED).pack(side="right")
+        self._btn(row, "Ver calibracion", self._show_calibration, width=14).pack(
+            side="left", padx=(0, 8)
+        )
+        tk.Label(row, text="ESC / F8 = stop", bg=CARD, fg=MUTED).pack(side="right")
 
         # 2 Mode
         _blog("mode")
-        c2 = self._section(root, "2. MODO", "#0d47a1")
+        c2 = tk.LabelFrame(
+            root, text=" 2. MODO ", bg=CARD, fg=INK,
+            font=("Helvetica", 12, "bold"), padx=10, pady=8,
+        )
+        c2.pack(fill="x", pady=(0, 8))
         r = tk.Frame(c2, bg=CARD)
         r.pack(fill="x")
         tk.Radiobutton(
             r, text="TEMPLATE", variable=self.mode_var, value="template",
-            bg=CARD, fg=INK, selectcolor=WHITE, font=("Helvetica", 11, "bold"),
-        ).pack(side="left", padx=(0, 12))
+            bg=CARD, fg=INK, font=("Helvetica", 12, "bold"),
+        ).pack(side="left", padx=(0, 14))
         tk.Radiobutton(
             r, text="AUTO-PLACE", variable=self.mode_var, value="auto",
-            bg=CARD, fg=INK, selectcolor=WHITE, font=("Helvetica", 11, "bold"),
+            bg=CARD, fg=INK, font=("Helvetica", 12, "bold"),
         ).pack(side="left", padx=(0, 16))
         tk.Label(r, text="Countdown", bg=CARD, fg=INK).pack(side="left")
         tk.Spinbox(
             r, from_=0, to=30, width=3, textvariable=self.countdown_var,
-            font=("Helvetica", 12, "bold"), bg=WHITE, fg=INK,
+            font=("Helvetica", 13, "bold"),
         ).pack(side="left", padx=4)
-        tk.Label(r, text="Max", bg=CARD, fg=INK).pack(side="left", padx=(10, 0))
+        tk.Label(r, text="Max", bg=CARD, fg=INK).pack(side="left", padx=(12, 0))
         tk.Spinbox(
             r, from_=1, to=50, width=3, textvariable=self.max_games_var,
-            font=("Helvetica", 12, "bold"), bg=WHITE, fg=INK,
+            font=("Helvetica", 13, "bold"),
         ).pack(side="left", padx=4)
         tk.Checkbutton(
-            r, text="Dry-run", variable=self.dry_var,
-            bg=CARD, fg=INK, selectcolor=WHITE,
+            r, text="Dry-run", variable=self.dry_var, bg=CARD, fg=INK,
         ).pack(side="left", padx=12)
 
-        # 3 Remaining draws
+        # 3 Remaining
         _blog("left")
-        c3 = self._section(root, "3. DONDE ARRANCAR — movimientos que QUEDAN", ORANGE)
+        c3 = tk.LabelFrame(
+            root, text=" 3. DONDE ARRANCAR — movimientos que QUEDAN ",
+            bg=CARD, fg=INK, font=("Helvetica", 12, "bold"), padx=10, pady=8,
+        )
+        c3.pack(fill="x", pady=(0, 8))
         tk.Label(
             c3, text="Cuantos movimientos quedan ahora?",
             bg=CARD, fg=INK, font=("Helvetica", 13, "bold"),
@@ -256,89 +213,68 @@ class JewelBingoPanel(tk.Tk):
 
         picker = tk.Frame(c3, bg=CARD)
         picker.pack(fill="x")
-        ActionButton(
-            picker, "-", lambda: self._nudge(-1), ORANGE, INK,
-            padx=14, pady=8, font=("Helvetica", 16, "bold"),
-        ).pack(side="left")
+        self._btn(picker, "-", lambda: self._nudge(-1), width=3).pack(side="left")
         tk.Spinbox(
             picker, from_=0, to=14, width=3, textvariable=self.left_var,
-            font=("Helvetica", 24, "bold"), justify="center",
-            bg=WHITE, fg=INK, relief="solid", bd=2,
-        ).pack(side="left", padx=10, ipady=6)
-        ActionButton(
-            picker, "+", lambda: self._nudge(1), ORANGE, INK,
-            padx=14, pady=8, font=("Helvetica", 16, "bold"),
-        ).pack(side="left")
+            font=("Helvetica", 28, "bold"), justify="center",
+        ).pack(side="left", padx=10, ipady=4)
+        self._btn(picker, "+", lambda: self._nudge(1), width=3).pack(side="left")
 
         quick = tk.Frame(picker, bg=CARD)
         quick.pack(side="left", padx=12)
-        for n, label, bg in (
-            (14, "Nueva", GREEN),
-            (10, "10", "#ffcc80"),
-            (7, "7", "#ffcc80"),
-            (5, "5", "#ffcc80"),
-            (3, "3", "#ef9a9a"),
-            (1, "1", "#ef9a9a"),
-        ):
-            ActionButton(
-                quick, label, lambda v=n: self.left_var.set(v), bg, INK,
-                padx=8, pady=6, font=("Helvetica", 10, "bold"),
+        for n, label in ((14, "Nueva"), (10, "10"), (7, "7"), (5, "5"), (3, "3"), (1, "1")):
+            self._btn(
+                quick, label, lambda v=n: self.left_var.set(v), width=5,
             ).pack(side="left", padx=2)
 
-        self.hint_frame = tk.Frame(c3, bg="#c8e6c9", highlightbackground="#000", highlightthickness=1)
-        self.hint_frame.pack(fill="x", pady=(10, 0))
         self.hint_lbl = tk.Label(
-            self.hint_frame, text="", bg="#c8e6c9", fg="#1b5e20",
-            font=("Helvetica", 12, "bold"), anchor="w", padx=8, pady=6,
+            c3, text="", bg="#c8e6c9", fg=OK,
+            font=("Helvetica", 12, "bold"), anchor="w",
+            relief="solid", bd=1, padx=8, pady=6,
         )
-        self.hint_lbl.pack(fill="x")
+        self.hint_lbl.pack(fill="x", pady=(10, 0))
         self.stats_var = tk.StringVar(value="")
         tk.Label(
             c3, textvariable=self.stats_var, bg=CARD, fg=MUTED, anchor="w",
-            justify="left", wraplength=800,
+            justify="left", wraplength=820,
         ).pack(fill="x", pady=(6, 0))
 
         # 4 Pattern
         _blog("pattern")
-        c4 = self._section(root, "4. PATRON TEMPLATE", PURPLE)
+        c4 = tk.LabelFrame(
+            root, text=" 4. PATRON TEMPLATE ", bg=CARD, fg=INK,
+            font=("Helvetica", 12, "bold"), padx=10, pady=8,
+        )
+        c4.pack(fill="x", pady=(0, 8))
         grid = tk.Frame(c4, bg=CARD)
         grid.pack()
         choices = list(JEWEL_TYPES) + ["FREE"]
-        for r in range(5):
+        for rr in range(5):
             row_vars: list[tk.StringVar] = []
-            for c in range(5):
+            for cc in range(5):
                 v = tk.StringVar(value="B")
                 row_vars.append(v)
-                if r == 2 and c == 2:
+                if rr == 2 and cc == 2:
                     v.set("FREE")
                     tk.Label(
-                        grid, text="FREE", width=5, bg="#9e9e9e", fg=INK,
+                        grid, text="FREE", width=5, bg="#bdbdbd", fg=INK,
                         relief="solid", bd=1, font=("Menlo", 11, "bold"),
-                    ).grid(row=r, column=c, padx=2, pady=2)
+                    ).grid(row=rr, column=cc, padx=2, pady=2)
                 else:
                     om = tk.OptionMenu(grid, v, *choices)
-                    om.configure(
-                        width=4, bg=WHITE, fg=INK, font=("Menlo", 11, "bold"),
-                        highlightthickness=1, activebackground="#eee",
-                    )
-                    om["menu"].configure(bg=WHITE, fg=INK, font=("Menlo", 11))
-                    om.grid(row=r, column=c, padx=2, pady=2)
+                    om.configure(width=4, font=("Menlo", 11, "bold"))
+                    om.grid(row=rr, column=cc, padx=2, pady=2)
             self._cell_vars.append(row_vars)
 
         prow = tk.Frame(c4, bg=CARD)
         prow.pack(fill="x", pady=(8, 0))
-        ActionButton(
-            prow, "Guardar", self._save_pattern, "#ddd", INK,
-            padx=10, pady=6, font=("Helvetica", 10, "bold"),
-        ).pack(side="left", padx=(0, 6))
-        ActionButton(
-            prow, "Reset ChatGPT", self._reset_pattern, "#ddd", INK,
-            padx=10, pady=6, font=("Helvetica", 10, "bold"),
-        ).pack(side="left", padx=(0, 6))
-        ActionButton(
-            prow, "Validar", self._validate_pattern, "#ddd", INK,
-            padx=10, pady=6, font=("Helvetica", 10, "bold"),
-        ).pack(side="left")
+        self._btn(prow, "Guardar", self._save_pattern, width=10).pack(
+            side="left", padx=(0, 6)
+        )
+        self._btn(prow, "Reset ChatGPT", self._reset_pattern, width=14).pack(
+            side="left", padx=(0, 6)
+        )
+        self._btn(prow, "Validar", self._validate_pattern, width=10).pack(side="left")
         legend = "  ".join(
             f"{k}={JEWEL_NAMES[k].replace('Jewel of ', '')}" for k in JEWEL_TYPES
         )
@@ -348,13 +284,12 @@ class JewelBingoPanel(tk.Tk):
 
         # 5 Log
         _blog("log")
-        tk.Label(
-            root, text="  5. LOG EN VIVO", bg="#000000", fg=LOG_FG,
-            font=("Helvetica", 12, "bold"), anchor="w", pady=6,
-        ).pack(fill="x")
-        log_box = tk.Frame(root, bg=LOG_FG, padx=2, pady=2)
-        log_box.pack(fill="both", expand=True)
-        log_inner = tk.Frame(log_box, bg=LOG_BG)
+        c5 = tk.LabelFrame(
+            root, text=" 5. LOG EN VIVO ", bg=CARD, fg=INK,
+            font=("Helvetica", 12, "bold"), padx=6, pady=6,
+        )
+        c5.pack(fill="both", expand=True, pady=(0, 4))
+        log_inner = tk.Frame(c5, bg=LOG_BG)
         log_inner.pack(fill="both", expand=True)
         self.log = tk.Text(
             log_inner, height=10, bg=LOG_BG, fg=LOG_FG, insertbackground=LOG_FG,
@@ -380,14 +315,13 @@ class JewelBingoPanel(tk.Tk):
         left = max(0, min(14, left))
         done = 14 - left
         if left >= 14:
-            bg, fg, text = "#c8e6c9", "#1b5e20", "Partida NUEVA — movimiento 1/14"
+            bg, fg, text = "#c8e6c9", OK, "Partida NUEVA — movimiento 1/14"
         elif left <= 3:
-            bg, fg = "#ffcdd2", "#b71c1c"
+            bg, fg = "#ffcdd2", BAD
             text = f"RESUME — quedan {left} — arranca en {done + 1}/14"
         else:
-            bg, fg = "#ffe0b2", "#e65100"
+            bg, fg = "#ffe0b2", WARN
             text = f"RESUME — quedan {left} — arranca en {done + 1}/14"
-        self.hint_frame.configure(bg=bg)
         self.hint_lbl.configure(text=text, bg=bg, fg=fg)
 
     def _append(self, text: str) -> None:
@@ -405,11 +339,11 @@ class JewelBingoPanel(tk.Tk):
 
     def _set_running(self, running: bool) -> None:
         self._running = running
-        self.btn_start.set_enabled(not running)
-        self.btn_stop.set_enabled(running)
+        self.btn_start.configure(state="disabled" if running else "normal")
+        self.btn_stop.configure(state="normal" if running else "disabled")
         self.status_lbl.configure(
             text="CORRIENDO" if running else "LISTO",
-            fg=RED if running else GREEN,
+            fg=BAD if running else OK,
         )
 
     def _pattern(self) -> list[list[str]]:
