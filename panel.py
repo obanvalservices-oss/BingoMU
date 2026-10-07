@@ -1,11 +1,5 @@
 """
-JewelBingo Panel v8 — Mac Aqua bulletproof.
-
-v7 still hid Spinbox/Labels under macOS dark mode (CLT Tk). v8:
-- No Spinbox (use Entry)
-- No colored Labels for critical text (use Button / Entry)
-- Log packed side=bottom first so it never collapses
-- Light system-friendly layout
+JewelBingo Panel v9 — Mac dark mode: ALL titles WHITE.
 """
 
 from __future__ import annotations
@@ -19,8 +13,6 @@ from pathlib import Path
 from typing import Optional
 
 os.environ.setdefault("TK_SILENCE_DEPRECATION", "1")
-# Prefer light Aqua chrome when possible (ignored on older Tk, harmless).
-os.environ.setdefault("NSRequiresAquaSystemAppearance", "1")
 
 import tkinter as tk
 from tkinter import messagebox
@@ -32,7 +24,11 @@ if str(ROOT) not in sys.path:
 ERROR_LOG = ROOT / "panel_error.log"
 BUILD_LOG = ROOT / "panel_build.log"
 CAL_PATH = ROOT / "assets" / "calibration" / "default.json"
-PANEL_VERSION = "2026-10-07-v8"
+PANEL_VERSION = "2026-10-07-v9"
+
+# Mac dark window → titles must be white or they vanish.
+WHITE = "#ffffff"
+INK = "#111111"
 
 
 def _crash(where: str, exc: BaseException) -> None:
@@ -118,17 +114,19 @@ class JewelBingoPanel(tk.Tk):
         )
 
     def _hdr(self, parent: tk.Misc, text: str) -> None:
-        # Disabled Button always paints text on Mac Aqua (Label often does not).
+        # WHITE — Mac dark window + black text = invisible.
         tk.Button(
             parent,
             text=text,
             state="disabled",
-            disabledforeground="#000000",
-            font=("Helvetica", 12, "bold"),
+            disabledforeground=WHITE,
+            fg=WHITE,
+            font=("Helvetica", 13, "bold"),
             anchor="w",
-            padx=6,
-            pady=4,
+            padx=8,
+            pady=5,
             relief="groove",
+            highlightbackground="#444444",
         ).pack(fill="x", pady=(8, 4))
 
     def _entry(self, parent: tk.Misc, var: tk.StringVar, *, width: int = 4, font=None) -> tk.Entry:
@@ -172,22 +170,21 @@ class JewelBingoPanel(tk.Tk):
         root = tk.Frame(self, padx=10, pady=6)
         root.pack(side="top", fill="both", expand=True)
 
-        # Header via buttons (visible on Mac)
         head = tk.Frame(root)
         head.pack(fill="x")
         tk.Button(
             head, text="JewelBingo", state="disabled",
-            disabledforeground="#000000", font=("Helvetica", 18, "bold"),
+            disabledforeground=WHITE, fg=WHITE, font=("Helvetica", 18, "bold"),
             relief="flat", padx=4,
         ).pack(side="left")
         tk.Button(
             head, text=PANEL_VERSION, state="disabled",
-            disabledforeground="#000000", font=("Helvetica", 11, "bold"),
+            disabledforeground=WHITE, fg=WHITE, font=("Helvetica", 11, "bold"),
             relief="solid", bd=1, padx=8,
         ).pack(side="left", padx=8)
         self.status_btn = tk.Button(
             head, text="LISTO", state="disabled",
-            disabledforeground="#1b5e20", font=("Helvetica", 12, "bold"),
+            disabledforeground=WHITE, fg=WHITE, font=("Helvetica", 12, "bold"),
             relief="flat",
         )
         self.status_btn.pack(side="right")
@@ -207,7 +204,7 @@ class JewelBingoPanel(tk.Tk):
         )
         tk.Button(
             row, text="ESC / F8 = stop", state="disabled",
-            disabledforeground="#444444", relief="flat",
+            disabledforeground=WHITE, fg=WHITE, relief="flat",
         ).pack(side="right")
 
         # 2 Mode
@@ -217,22 +214,25 @@ class JewelBingoPanel(tk.Tk):
         r.pack(fill="x")
         tk.Radiobutton(
             r, text="TEMPLATE", variable=self.mode_var, value="template",
-            font=("Helvetica", 12, "bold"),
+            font=("Helvetica", 12, "bold"), fg=WHITE,
         ).pack(side="left", padx=(0, 12))
         tk.Radiobutton(
             r, text="AUTO-PLACE", variable=self.mode_var, value="auto",
-            font=("Helvetica", 12, "bold"),
+            font=("Helvetica", 12, "bold"), fg=WHITE,
         ).pack(side="left", padx=(0, 16))
         tk.Button(
-            r, text="Countdown", state="disabled", disabledforeground="#000",
-            relief="flat",
+            r, text="Countdown", state="disabled",
+            disabledforeground=WHITE, fg=WHITE, relief="flat",
         ).pack(side="left")
         self._entry(r, self.countdown_var, width=3).pack(side="left", padx=4)
         tk.Button(
-            r, text="Max", state="disabled", disabledforeground="#000", relief="flat",
+            r, text="Max", state="disabled",
+            disabledforeground=WHITE, fg=WHITE, relief="flat",
         ).pack(side="left", padx=(10, 0))
         self._entry(r, self.max_games_var, width=3).pack(side="left", padx=4)
-        tk.Checkbutton(r, text="Dry-run", variable=self.dry_var).pack(side="left", padx=12)
+        tk.Checkbutton(r, text="Dry-run", variable=self.dry_var, fg=WHITE).pack(
+            side="left", padx=12
+        )
 
         # 3 Remaining
         _blog("left")
@@ -240,7 +240,7 @@ class JewelBingoPanel(tk.Tk):
         tk.Button(
             root,
             text="14 = partida NUEVA.  Menos de 14 = RESUME (no gasta card).",
-            state="disabled", disabledforeground="#333333", relief="flat",
+            state="disabled", disabledforeground=WHITE, fg=WHITE, relief="flat",
             anchor="w",
         ).pack(fill="x")
 
@@ -262,13 +262,13 @@ class JewelBingoPanel(tk.Tk):
 
         self.hint_btn = tk.Button(
             root, textvariable=self.hint_var, state="disabled",
-            disabledforeground="#1b5e20", font=("Helvetica", 12, "bold"),
+            disabledforeground=WHITE, fg=WHITE, font=("Helvetica", 12, "bold"),
             relief="solid", bd=1, anchor="w", padx=8, pady=6,
         )
         self.hint_btn.pack(fill="x", pady=(6, 0))
         tk.Button(
             root, textvariable=self.stats_var, state="disabled",
-            disabledforeground="#444444", relief="flat", anchor="w",
+            disabledforeground=WHITE, fg=WHITE, relief="flat", anchor="w",
             wraplength=860, justify="left",
         ).pack(fill="x")
 
@@ -287,7 +287,7 @@ class JewelBingoPanel(tk.Tk):
                     v.set("FREE")
                     tk.Button(
                         grid, text="FREE", width=5, state="disabled",
-                        disabledforeground="#000000", font=("Menlo", 11, "bold"),
+                        disabledforeground=WHITE, fg=WHITE, font=("Menlo", 11, "bold"),
                         relief="solid", bd=1,
                     ).grid(row=rr, column=cc, padx=2, pady=2)
                 else:
@@ -307,7 +307,8 @@ class JewelBingoPanel(tk.Tk):
             f"{k}={JEWEL_NAMES[k].replace('Jewel of ', '')}" for k in JEWEL_TYPES
         )
         tk.Button(
-            prow, text=legend, state="disabled", disabledforeground="#555555",
+            prow, text=legend, state="disabled",
+            disabledforeground=WHITE, fg=WHITE,
             relief="flat", font=("Helvetica", 8),
         ).pack(side="right")
 
@@ -325,16 +326,13 @@ class JewelBingoPanel(tk.Tk):
         done = 14 - left
         if left >= 14:
             text = "Partida NUEVA — movimiento 1/14"
-            fg = "#1b5e20"
         elif left <= 3:
             text = f"RESUME — quedan {left} — arranca en {done + 1}/14"
-            fg = "#b71c1c"
         else:
             text = f"RESUME — quedan {left} — arranca en {done + 1}/14"
-            fg = "#e65100"
         self.hint_var.set(text)
         try:
-            self.hint_btn.configure(disabledforeground=fg)
+            self.hint_btn.configure(disabledforeground=WHITE, fg=WHITE)
         except Exception:
             pass
 
@@ -357,7 +355,8 @@ class JewelBingoPanel(tk.Tk):
         self.btn_stop.configure(state="normal" if running else "disabled")
         self.status_btn.configure(
             text="CORRIENDO" if running else "LISTO",
-            disabledforeground="#b71c1c" if running else "#1b5e20",
+            disabledforeground=WHITE,
+            fg=WHITE,
         )
 
     def _pattern(self) -> list[list[str]]:
