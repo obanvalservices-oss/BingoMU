@@ -64,6 +64,11 @@ def parse_args() -> argparse.Namespace:
         help="With --resume: how many draws are LEFT (1–14). Overrides auto-count.",
     )
     p.add_argument("--show-pattern", action="store_true", help="Print ChatGPT pattern and exit")
+    p.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Less console spam (verify/wait details). Panel always uses this.",
+    )
     return p.parse_args()
 
 
@@ -168,6 +173,7 @@ def main() -> int:
         resume=args.resume,
         resume_left=resume_left,
         template=load_active_template(),
+        verbose=not args.quiet,
     )
     stop_listener = install_kill_hotkey(bot.controller, keys=("esc", "f8"))
     if args.resume:

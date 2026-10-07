@@ -53,6 +53,7 @@ class BingoBot:
         resume_left: int | None = None,
         template: list[list[str]] | None = None,
         on_status: Optional[Callable[[str], None]] = None,
+        verbose: bool = True,
     ) -> None:
         self.cal = calibration
         self.placement_mode = placement_mode
@@ -64,6 +65,7 @@ class BingoBot:
         self.resume_left = resume_left
         self.template = template if template is not None else load_active_template()
         self.on_status = on_status
+        self.verbose = verbose
         # Clicks use absolute screen coords; vision grabs ONLY the game ROI
         # (cuts Retina full-desktop frames that ballooned RAM to tens of GB).
         grab_r = vision_grab_rect(calibration, pad=80)
@@ -71,7 +73,7 @@ class BingoBot:
         self._grab_oy = grab_r.y
         self.vcal = shift_calibration(calibration, grab_r.x, grab_r.y)
         self.capture = ScreenCapture(region=grab_r)
-        print(
+        self._say(
             f"Capture ROI {grab_r.w}x{grab_r.h} @ ({grab_r.x},{grab_r.y}) "
             f"(not full desktop — RAM safe)"
         )
@@ -95,6 +97,15 @@ class BingoBot:
 
     def frame(self) -> np.ndarray:
         return self.capture.grab()
+
+    def _say(self, msg: str) -> None:
+        """Always print important status (short)."""
+        print(msg, flush=True)
+
+    def _vprint(self, msg: str) -> None:
+        """Verbose-only — skipped with --quiet (stops Terminal/panel RAM flood)."""
+        if self.verbose:
+            print(msg, flush=True)
 
     def _gc_tick(self) -> None:
         self._frame_i += 1
@@ -706,11 +717,12 @@ class BingoBot:
             else:
                 cell_streak = 0
 
-            print(
-                f"    verify {attempt+1}: counterΔ={cd:.1f} drawΔ={dd:.1f} "
-                f"cellΔ={cell_d:.1f} blue={blue} "
-                f"cStreak={counter_streak} dStreak={draw_streak} cellStreak={cell_streak}"
-            )
+            if self.verbose and (attempt == 0 or attempt % 4 == 0):
+                self._vprint(
+                    f"    verify {attempt+1}: counterΔ={cd:.1f} drawΔ={dd:.1f} "
+                    f"cellΔ={cell_d:.1f} blue={blue} "
+                    f"cStreak={counter_streak} dStreak={draw_streak} cellStreak={cell_streak}"
+                )
             # MUST see counter or draw icon advance — cell glow alone lied (Soul false OK)
             if counter_streak >= 2 or draw_streak >= 2:
                 try:
@@ -734,7 +746,7 @@ class BingoBot:
             # Do not accept blue+cell alone — caused false Soul mark then stuck retry
             time.sleep(0.2)
 
-        print("    reintento de clic...")
+        self._vprint("    reintento de clic...")
         self.controller.click_cell_mark(*cell)
         self.controller.wait(0.55)
         self.controller.park_mouse()
@@ -747,7 +759,9 @@ class BingoBot:
             crop(frame, self.marked_detector._cells[cell[0]][cell[1]]),
         )
         blue = self.marked_detector.cell_marked_blue(frame, *cell)
-        print(f"    retry check: counterΔ={cd:.1f} drawΔ={dd:.1f} cellΔ={cell_d:.1f} blue={blue}")
+        self._vprint(
+            f"    retry check: counterΔ={cd:.1f} drawΔ={dd:.1f} cellΔ={cell_d:.1f} blue={blue}"
+        )
         if (dd >= 2.0 or cd >= 1.2) and (cell_d >= 2.0 or blue):
             return True
         if blue and (cd >= 0.8 or dd >= 1.0 or cell_d >= 4.0):
@@ -774,14 +788,14 @@ class BingoBot:
             self._gc_tick()
             jewel = self.draw_detector.detect_from_board_blink(board)
             now = time.time()
-            if now - last_log >= 1.5:
-                print(f"  ... {self.draw_detector.debug_snapshot(board)}")
+            if self.verbose and now - last_log >= 3.0:
+                self._vprint(f"  ... {self.draw_detector.debug_snapshot(board)}")
                 last_log = now
             if jewel and avoid and jewel == avoid:
                 if stuck_since is None:
                     stuck_since = now
                 if now - stuck_since >= 4.0:
-                    print(
+                    self._say(
                         f"  same draw still {avoid} after 4s — "
                         "re-click (el mark anterior no avanzó el juego)"
                     )
@@ -802,13 +816,14 @@ class BingoBot:
                     scores = self.draw_detector._last_scores or {}
                     if n >= 3 and n > second_n:
                         self.draw_detector._last_source = "board_vote"
-                        print(f"  vote → {top} ({n}/8) scores={scores}")
+                        self._say(f"  vote → {top}")
+                        self._vprint(f"  vote detail ({n}/8) scores={scores}")
                         return top
                     if n >= 3 and n == second_n:
                         contenders = [j for j, c in counts.items() if c == n]
                         top = max(contenders, key=lambda j: scores.get(j, 0.0))
                         self.draw_detector._last_source = "board_vote_tiebreak"
-                        print(f"  vote-tie → {top} scores={scores}")
+                        self._say(f"  vote-tie → {top}")
                         return top
             time.sleep(0.1)
         if board is not None and self.draw_detector._last_scores:
@@ -820,17 +835,22 @@ class BingoBot:
             best_j, best_v = ranked[0]
             second_v = ranked[1][1] if len(ranked) > 1 else 0.0
             if best_v >= 8.0 and best_v >= second_v:
-                print(f"  soft-pick → {best_j} ({best_v:.1f} vs {second_v:.1f})")
+                self._say(f"  soft-pick → {best_j}")
                 return best_j
         return None
 
     def _accept_reward(self) -> bool:
         self.logger.log_event("accept_reward")
-        print("Get Reward...")
+        self._say("Get Reward...")
         self.controller.accept_reward()
         self.controller.wait(2.0)
-        if self.resume:
-            print("RESUME: una partida — paro aquí (no gasto otra card).")
+        # Resume only applied to the first in-progress game; then keep playing
+        # until max_games / no cards (do NOT force-stop here).
+        self.resume = False
+        self.resume_left = None
+        self._draws_done_offset = 0
+        if self.max_games is not None and self.games_played >= self.max_games:
+            self._say(f"Max cards alcanzado ({self.games_played}).")
             return False
         self.state = GameState.PRESS_START
         return True

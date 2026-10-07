@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
 ERROR_LOG = ROOT / "panel_error.log"
 BUILD_LOG = ROOT / "panel_build.log"
 CAL_PATH = ROOT / "assets" / "calibration" / "default.json"
-PANEL_VERSION = "2026-10-07-v14"
+PANEL_VERSION = "2026-10-07-v15"
 
 # Mac dark window → titles must be white or they vanish.
 WHITE = "#ffffff"
@@ -394,14 +394,19 @@ class JewelBingoPanel(tk.Tk):
             pass
 
     def _append(self, text: str) -> None:
+        # Drop ultra-chatty verify lines (they blew Terminal/panel RAM)
+        if "verify " in text and "counterΔ" in text:
+            return
+        if text.strip().startswith("... ") and "roi_blink" in text:
+            return
+
         def _do() -> None:
             try:
                 self.log.insert("end", text)
-                # Cap log size so the Text widget cannot grow without bound
                 try:
                     lines = int(self.log.index("end-1c").split(".")[0])
-                    if lines > 800:
-                        self.log.delete("1.0", f"{lines - 600}.0")
+                    if lines > 400:
+                        self.log.delete("1.0", f"{lines - 250}.0")
                 except Exception:
                     pass
                 self.log.see("end")
@@ -529,6 +534,18 @@ class JewelBingoPanel(tk.Tk):
             messagebox.showerror("Sin calibracion", str(CAL_PATH))
             return
 
+        # Never leave a previous bot zombie eating RAM
+        if self._proc and self._proc.poll() is None:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
+            self._proc = None
+
         from src.patterns import save_active_template, validate_template
 
         tmpl = self._pattern()
@@ -554,6 +571,7 @@ class JewelBingoPanel(tk.Tk):
             "--countdown", str(countdown),
             "--cal", str(CAL_PATH),
             "--log-dir", str(ROOT / "logs"),
+            "--quiet",  # no verify spam → Terminal/panel stay light
         ]
         # 0 = until no cards (works even with --resume); N = stop after N full games.
         cmd += ["--max-games", "0" if until_empty else str(max_games)]
@@ -564,7 +582,7 @@ class JewelBingoPanel(tk.Tk):
 
         self._set_running(True)
         cards_msg = "hasta acabar cards" if until_empty else f"{max_games} card(s)"
-        self._append(f"\nSTART left={left} resume={resume} cards={cards_msg}\n")
+        self._append(f"\nSTART left={left} resume={resume} cards={cards_msg} (quiet)\n")
 
         env = os.environ.copy()
         env["TK_SILENCE_DEPRECATION"] = "1"
