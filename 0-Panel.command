@@ -1,11 +1,8 @@
 #!/bin/bash
 cd "$(dirname "$0")" || exit 1
-echo "========================================"
-echo "  JewelBingo Panel"
-echo "  $(pwd)"
-echo "========================================"
+echo "JewelBingo Panel — $(pwd)"
 if [[ ! -d .venv ]]; then
-  echo "Falta .venv — corre 1-Instalar.command"
+  echo "Falta .venv"
   read -r -p "Enter..."
   exit 1
 fi
@@ -13,16 +10,11 @@ fi
 source .venv/bin/activate
 export TK_SILENCE_DEPRECATION=1
 xattr -cr . >/dev/null 2>&1 || true
-
-echo "Actualizando..."
 git fetch origin
 git reset --hard origin/main
 echo "Commit: $(git rev-parse --short HEAD)"
-VER=$(python -c "import panel; print(panel.PANEL_VERSION)")
-echo "Version: $VER"
-echo "Abriendo..."
+python -c "import panel; print('Version:', panel.PANEL_VERSION)"
 python panel.py
 echo ""
-[[ -f panel_build.log ]] && echo "--- panel_build.log ---" && cat panel_build.log
-[[ -f panel_error.log ]] && echo "--- panel_error.log ---" && cat panel_error.log
+[[ -f panel_error.log ]] && echo "=== panel_error.log ===" && cat panel_error.log
 read -r -p "Enter..."
