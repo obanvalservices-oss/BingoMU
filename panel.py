@@ -144,6 +144,10 @@ class JewelBingoPanel(tk.Tk):
             r1, text="Dry-run", variable=self.dry_var,
             bg=BG, fg=FG, selectcolor=BG, activebackground=BG,
         ).pack(side=tk.LEFT, padx=10)
+        tk.Button(
+            r1, text="Ver calibracion", command=self._show_calibration,
+            bg="#90caf9", fg=FG,
+        ).pack(side=tk.LEFT, padx=6)
         tk.Label(r1, text="ESC/F8 = stop", bg=BG, fg="#666666").pack(side=tk.RIGHT)
 
         # —— Middle: pattern | resumen ——
@@ -274,6 +278,32 @@ class JewelBingoPanel(tk.Tk):
         except Exception:
             n = 14
         self.left_var.set(max(0, min(14, n + delta)))
+
+    def _show_calibration(self) -> None:
+        """Open live overlay of calibration boxes (subprocess — Mac-safe)."""
+        if not CAL_PATH.exists():
+            messagebox.showerror(
+                "Sin calibracion",
+                f"Falta:\n{CAL_PATH}\nCorre 2-Calibrar.command primero.",
+            )
+            return
+        script = ROOT / "tools" / "show_calibration.py"
+        self._append_log(
+            "\nAbriendo vista de calibracion…\n"
+            "Mueve Chrome Remote Desktop hasta que los recuadros coincidan.\n"
+            "Q o ESC cierra la vista.\n"
+        )
+        env = os.environ.copy()
+        env["TK_SILENCE_DEPRECATION"] = "1"
+        try:
+            subprocess.Popen(
+                [sys.executable, "-u", str(script), "--cal", str(CAL_PATH)],
+                cwd=str(ROOT),
+                env=env,
+            )
+        except Exception as e:
+            _log_crash("show_calibration", e)
+            messagebox.showerror("Error", str(e))
 
     def _on_left_changed(self, *_args) -> None:
         try:
