@@ -1,7 +1,8 @@
 """
-Live calibration overlay — show where the bot thinks each ROI is.
+Live calibration overlay at REAL screen size (1:1).
 
-Move Chrome Remote Desktop until the boxes line up, then press Q / ESC to close.
+Shows boxes exactly where the bot clicks. Move Chrome Remote Desktop until
+the GRID / buttons line up with the game, then Q / ESC to close.
 
   python tools/show_calibration.py
   python tools/show_calibration.py --cal assets/calibration/default.json
@@ -37,6 +38,8 @@ COLORS = {
     "jewel": (255, 255, 255),
 }
 
+WIN = "JewelBingo Calibration 1:1 — mueve RD | R refresca | F pantalla | Q cierra"
+
 
 def _draw_rect(
     img: np.ndarray, rect: Rect, color: tuple[int, int, int], label: str, thick: int = 2
@@ -48,12 +51,11 @@ def _draw_rect(
     if x1 <= x0 or y1 <= y0:
         return
     cv2.rectangle(img, (x0, y0), (x1, y1), color, thick)
-    # label background
-    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
     ly = max(th + 4, y0 - 4)
     cv2.rectangle(img, (x0, ly - th - 4), (x0 + tw + 4, ly + 2), color, -1)
     cv2.putText(
-        img, label, (x0 + 2, ly - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA
+        img, label, (x0 + 2, ly - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA
     )
 
 
@@ -63,7 +65,6 @@ def _draw_grid_cells(img: np.ndarray, grid: Rect, color: tuple[int, int, int]) -
         y = int(grid.y + i * grid.h / 5)
         cv2.line(img, (x, grid.y), (x, grid.y + grid.h), color, 1)
         cv2.line(img, (grid.x, y), (grid.x + grid.w, y), color, 1)
-    # FREE center highlight
     cx = int(grid.x + 2.5 * grid.w / 5)
     cy = int(grid.y + 2.5 * grid.h / 5)
     cv2.circle(img, (cx, cy), 8, (0, 255, 255), 2)
@@ -72,7 +73,7 @@ def _draw_grid_cells(img: np.ndarray, grid: Rect, color: tuple[int, int, int]) -
 def paint_calibration(frame: np.ndarray, cal: Calibration) -> np.ndarray:
     out = frame.copy()
     _draw_rect(out, cal.overlay, COLORS["overlay"], "OVERLAY", 2)
-    _draw_rect(out, cal.grid, COLORS["grid"], "GRID 5x5", 2)
+    _draw_rect(out, cal.grid, COLORS["grid"], "GRID 5x5", 3)
     _draw_grid_cells(out, cal.grid, COLORS["grid"])
     _draw_rect(out, cal.boxes, COLORS["boxes"], "BOXES (azul)", 2)
     _draw_rect(out, cal.auto_btn, COLORS["auto_btn"], "AUTO", 2)
@@ -83,17 +84,63 @@ def paint_calibration(frame: np.ndarray, cal: Calibration) -> np.ndarray:
     for code, rect in (cal.jewel_btns or {}).items():
         _draw_rect(out, rect, COLORS["jewel"], f"J-{code}", 1)
 
-    # Legend banner
-    tip = "Mueve Remote Desktop hasta que coincida | Q/ESC = cerrar | R = refrescar ahora"
-    cv2.rectangle(out, (0, 0), (out.shape[1], 28), (0, 0, 0), -1)
+    h, w = out.shape[:2]
+    tip = (
+        f"1:1 REAL {w}x{h}  |  Mueve Chrome Remote Desktop hasta que GRID coincida  "
+        f"|  R=refrescar  F=fullscreen  Q/ESC=cerrar"
+    )
+    cv2.rectangle(out, (0, 0), (w, 32), (0, 0, 0), -1)
     cv2.putText(
-        out, tip, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1, cv2.LINE_AA
+        out, tip, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1, cv2.LINE_AA
     )
     return out
 
 
+def _show(win: str, vis: np.ndarray, *, fullscreen: bool, fit: bool) -> None:
+    h, w = vis.shape[:2]
+    show = vis
+    if fit:
+        max_w = 1400
+        if w > max_w:
+            scale = max_w / w
+            show = cv2.resize(vis, (int(w * scale), int(h * scale)))
+    cv2.imshow(win, show)
+    if not fit:
+        # Force 1:1 window size matching capture pixels
+        try:
+            cv2.resizeWindow(win, w, h)
+            cv2.moveWindow(win, 0, 0)
+        except Exception:
+            pass
+    try:
+        cv2.setWindowProperty(
+            win,
+            cv2.WND_PROP_FULLSCREEN,
+            cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL,
+        )
+    except Exception:
+        pass
+
+
+def _grab_clean(cap: ScreenCapture, win: str) -> np.ndarray:
+    """Hide overlay briefly so the screenshot is the real desktop (RD + game)."""
+    try:
+        cv2.destroyWindow(win)
+        cv2.waitKey(1)
+    except Exception:
+        pass
+    time.sleep(0.12)
+    frame = cap.grab()
+    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    try:
+        cv2.setWindowProperty(win, cv2.WND_PROP_TOPMOST, 1)
+    except Exception:
+        pass
+    return frame
+
+
 def main() -> int:
-    p = argparse.ArgumentParser(description="Show live calibration boxes on screen")
+    p = argparse.ArgumentParser(description="Show calibration boxes at real 1:1 screen size")
     p.add_argument(
         "--cal",
         type=Path,
@@ -102,14 +149,24 @@ def main() -> int:
     p.add_argument(
         "--interval",
         type=float,
-        default=0.45,
-        help="Seconds between live refresh (default 0.45)",
+        default=0.0,
+        help="Auto-refresh seconds (0 = only manual R). Default 0.",
+    )
+    p.add_argument(
+        "--fit",
+        action="store_true",
+        help="Scale down to fit (NOT for alignment — use default 1:1)",
+    )
+    p.add_argument(
+        "--windowed",
+        action="store_true",
+        help="Start windowed instead of fullscreen",
     )
     p.add_argument(
         "--save",
         type=Path,
         default=None,
-        help="Also write one PNG preview and exit",
+        help="Write one PNG preview and exit",
     )
     args = p.parse_args()
 
@@ -120,37 +177,53 @@ def main() -> int:
 
     cal = Calibration.load(str(args.cal))
     cap = ScreenCapture()
-    win = "JewelBingo Calibration — move RD to match"
-    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    fullscreen = not args.windowed and not args.fit
 
-    print("Live calibration preview")
+    print("Calibration preview @ REAL SIZE (1:1)")
     print(f"  cal: {args.cal}")
-    print("  Move Chrome Remote Desktop until boxes line up.")
-    print("  Q / ESC = close | R = refresh now")
+    print("  Move Chrome Remote Desktop until GRID/buttons match the game.")
+    print("  R = refresh (hides overlay, grabs clean screen)")
+    print("  F = toggle fullscreen | Q / ESC = close")
 
+    # First grab before any window exists
+    frame = cap.grab()
+    vis = paint_calibration(frame, cal)
+    cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
+    try:
+        cv2.setWindowProperty(WIN, cv2.WND_PROP_TOPMOST, 1)
+    except Exception:
+        pass
+    _show(WIN, vis, fullscreen=fullscreen, fit=args.fit)
+
+    if args.save:
+        args.save.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(args.save), paint_calibration(frame, cal))
+        print(f"Saved {args.save}")
+        cap.close()
+        cv2.destroyAllWindows()
+        return 0
+
+    last = time.time()
     try:
         while True:
-            frame = cap.grab()
-            vis = paint_calibration(frame, cal)
-            # Fit on screen reasonably
-            h, w = vis.shape[:2]
-            max_w = 1400
-            if w > max_w:
-                scale = max_w / w
-                vis = cv2.resize(vis, (int(w * scale), int(h * scale)))
-            cv2.imshow(win, vis)
+            wait_ms = 50
+            if args.interval > 0:
+                wait_ms = max(1, int(args.interval * 1000))
+            key = cv2.waitKey(wait_ms) & 0xFF
 
-            if args.save:
-                args.save.parent.mkdir(parents=True, exist_ok=True)
-                cv2.imwrite(str(args.save), paint_calibration(frame, cal))
-                print(f"Saved {args.save}")
-                break
-
-            key = cv2.waitKey(max(1, int(args.interval * 1000))) & 0xFF
             if key in (ord("q"), ord("Q"), 27):
                 break
-            if key in (ord("r"), ord("R")):
+            if key in (ord("f"), ord("F")):
+                fullscreen = not fullscreen
+                _show(WIN, vis, fullscreen=fullscreen, fit=args.fit)
                 continue
+            if key in (ord("r"), ord("R")) or (
+                args.interval > 0 and time.time() - last >= args.interval
+            ):
+                frame = _grab_clean(cap, WIN)
+                vis = paint_calibration(frame, cal)
+                _show(WIN, vis, fullscreen=fullscreen, fit=args.fit)
+                last = time.time()
     finally:
         cap.close()
         cv2.destroyAllWindows()

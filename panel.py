@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
 ERROR_LOG = ROOT / "panel_error.log"
 BUILD_LOG = ROOT / "panel_build.log"
 CAL_PATH = ROOT / "assets" / "calibration" / "default.json"
-PANEL_VERSION = "2026-10-07-v9"
+PANEL_VERSION = "2026-10-07-v10"
 
 # Mac dark window → titles must be white or they vanish.
 WHITE = "#ffffff"
@@ -412,7 +412,10 @@ class JewelBingoPanel(tk.Tk):
         if not CAL_PATH.exists():
             messagebox.showerror("Sin calibracion", str(CAL_PATH))
             return
-        self._append("Abriendo calibracion (Q/ESC cierra)\n")
+        self._append(
+            "Calibracion 1:1 pantalla completa — mueve Remote Desktop hasta "
+            "que GRID coincida | R=refrescar | Q=cerrar\n"
+        )
         env = os.environ.copy()
         env["TK_SILENCE_DEPRECATION"] = "1"
         subprocess.Popen(
