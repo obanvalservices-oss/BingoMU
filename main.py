@@ -38,7 +38,12 @@ def parse_args() -> argparse.Namespace:
         default=600,
         help="Monte Carlo sims per decision (lower = faster clicks)",
     )
-    p.add_argument("--max-games", type=int, default=None)
+    p.add_argument(
+        "--max-games",
+        type=int,
+        default=None,
+        help="Max full games (1 card = 1 game). 0 or omit (non-resume) = until no cards.",
+    )
     p.add_argument("--log-dir", type=Path, default=ROOT / "logs")
     p.add_argument(
         "--countdown",
@@ -145,13 +150,19 @@ def main() -> int:
     resume_left = None
     if args.resume:
         resume_left = ask_remaining_draws(args.left)
+    # max_games: >0 = stop after N games; 0 = until no cards; None = 1 if resume else until cards
+    if args.max_games is not None:
+        max_games = None if args.max_games <= 0 else args.max_games
+    else:
+        max_games = 1 if args.resume else None
+
     bot = BingoBot(
         calibration=cal,
         placement_mode=mode,
         dry_run=args.dry_run,
         use_mc=not args.no_mc,
         n_sims=args.sims,
-        max_games=args.max_games if args.max_games is not None else (1 if args.resume else None),
+        max_games=max_games,
         log_dir=str(args.log_dir),
         template_dir=str(ROOT / "assets" / "templates"),
         resume=args.resume,

@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
 ERROR_LOG = ROOT / "panel_error.log"
 BUILD_LOG = ROOT / "panel_build.log"
 CAL_PATH = ROOT / "assets" / "calibration" / "default.json"
-PANEL_VERSION = "2026-10-07-v12"
+PANEL_VERSION = "2026-10-07-v13"
 
 # Mac dark window → titles must be white or they vanish.
 WHITE = "#ffffff"
@@ -62,6 +62,8 @@ class JewelBingoPanel(tk.Tk):
 
         self.mode_var = tk.StringVar(value="template")
         self.countdown_var = tk.StringVar(value="5")
+        # Cards: 1 card = 1 full game. until = keep going until no cards.
+        self.cards_mode_var = tk.StringVar(value="until")
         self.max_games_var = tk.StringVar(value="1")
         self.left_var = tk.StringVar(value="14")
         self.dry_var = tk.BooleanVar(value=False)
@@ -228,14 +230,46 @@ class JewelBingoPanel(tk.Tk):
             disabledforeground=WHITE, fg=WHITE, relief="flat",
         ).pack(side="left")
         self._entry(r, self.countdown_var, width=3).pack(side="left", padx=4)
-        tk.Button(
-            r, text="Max", state="disabled",
-            disabledforeground=WHITE, fg=WHITE, relief="flat",
-        ).pack(side="left", padx=(10, 0))
-        self._entry(r, self.max_games_var, width=3).pack(side="left", padx=4)
         tk.Checkbutton(r, text="Dry-run", variable=self.dry_var, fg=WHITE).pack(
             side="left", padx=12
         )
+
+        # 2b Cards / games limit
+        self._hdr(root, "2b. CARDS — 1 card = 1 juego completo (max 32)")
+        tk.Button(
+            root,
+            text="Si eliges N cards, para al terminar esa cantidad. "
+                 "Si eliges HASTA ACABAR, sigue hasta que no haya cards.",
+            state="disabled", disabledforeground=WHITE, fg=WHITE, relief="flat",
+            anchor="w",
+        ).pack(fill="x")
+        cards_row = tk.Frame(root)
+        cards_row.pack(fill="x", pady=4)
+        tk.Radiobutton(
+            cards_row, text="Hasta acabar cards",
+            variable=self.cards_mode_var, value="until",
+            font=("Helvetica", 12, "bold"), fg=WHITE,
+            command=self._sync_cards_ui,
+        ).pack(side="left", padx=(0, 16))
+        tk.Radiobutton(
+            cards_row, text="Solo N cards:",
+            variable=self.cards_mode_var, value="count",
+            font=("Helvetica", 12, "bold"), fg=WHITE,
+            command=self._sync_cards_ui,
+        ).pack(side="left")
+        self.cards_entry = self._entry(
+            cards_row, self.max_games_var, width=3, font=("Helvetica", 18, "bold"),
+        )
+        self.cards_entry.pack(side="left", padx=6, ipady=4)
+        cards_quick = tk.Frame(cards_row)
+        cards_quick.pack(side="left", padx=6)
+        for n in (1, 5, 10, 20, 32):
+            self._btn(
+                cards_quick, str(n),
+                lambda v=n: self._set_cards_count(v),
+                width=3,
+            ).pack(side="left", padx=2)
+        self._sync_cards_ui()
 
         # 3 Remaining
         _blog("left")
@@ -320,6 +354,26 @@ class JewelBingoPanel(tk.Tk):
             return max(0, min(14, int(str(self.left_var.get()).strip())))
         except Exception:
             return 14
+
+    def _cards_count(self) -> int:
+        try:
+            return max(1, min(32, int(str(self.max_games_var.get()).strip())))
+        except Exception:
+            return 1
+
+    def _set_cards_count(self, n: int) -> None:
+        self.cards_mode_var.set("count")
+        self.max_games_var.set(str(max(1, min(32, int(n)))))
+        self._sync_cards_ui()
+
+    def _sync_cards_ui(self) -> None:
+        try:
+            if self.cards_mode_var.get() == "count":
+                self.cards_entry.configure(state="normal")
+            else:
+                self.cards_entry.configure(state="disabled")
+        except Exception:
+            pass
 
     def _nudge(self, d: int) -> None:
         self.left_var.set(str(max(0, min(14, self._left_int() + d))))
@@ -483,27 +537,27 @@ class JewelBingoPanel(tk.Tk):
             countdown = max(0, int(str(self.countdown_var.get()).strip()))
         except Exception:
             countdown = 5
-        try:
-            max_games = max(1, int(str(self.max_games_var.get()).strip()))
-        except Exception:
-            max_games = 1
 
+        until_empty = self.cards_mode_var.get() == "until"
+        max_games = self._cards_count()
         resume = left < 14
         cmd = [
             sys.executable, "-u", str(ROOT / "main.py"),
             "--mode", self.mode_var.get(),
             "--countdown", str(countdown),
-            "--max-games", str(1 if resume else max_games),
             "--cal", str(CAL_PATH),
             "--log-dir", str(ROOT / "logs"),
         ]
+        # 0 = until no cards (works even with --resume); N = stop after N full games.
+        cmd += ["--max-games", "0" if until_empty else str(max_games)]
         if resume:
             cmd += ["--resume", "--left", str(left)]
         if self.dry_var.get():
             cmd.append("--dry-run")
 
         self._set_running(True)
-        self._append(f"\nSTART left={left} resume={resume}\n")
+        cards_msg = "hasta acabar cards" if until_empty else f"{max_games} card(s)"
+        self._append(f"\nSTART left={left} resume={resume} cards={cards_msg}\n")
 
         env = os.environ.copy()
         env["TK_SILENCE_DEPRECATION"] = "1"
