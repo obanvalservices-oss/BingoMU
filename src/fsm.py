@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import gc
 import time
 from collections import Counter
 from typing import Callable, Optional
 
 import numpy as np
 
-from .capture import ScreenCapture, crop
+from .capture import ScreenCapture, crop, shift_calibration, vision_grab_rect
 from .control import Controller
 from .logger import GameLogger
 from .patterns import (
@@ -63,7 +64,17 @@ class BingoBot:
         self.resume_left = resume_left
         self.template = template if template is not None else load_active_template()
         self.on_status = on_status
-        self.capture = ScreenCapture()
+        # Clicks use absolute screen coords; vision grabs ONLY the game ROI
+        # (cuts Retina full-desktop frames that ballooned RAM to tens of GB).
+        grab_r = vision_grab_rect(calibration, pad=80)
+        self._grab_ox = grab_r.x
+        self._grab_oy = grab_r.y
+        self.vcal = shift_calibration(calibration, grab_r.x, grab_r.y)
+        self.capture = ScreenCapture(region=grab_r)
+        print(
+            f"Capture ROI {grab_r.w}x{grab_r.h} @ ({grab_r.x},{grab_r.y}) "
+            f"(not full desktop — RAM safe)"
+        )
         self.controller = Controller(calibration, dry_run=dry_run)
         self.classifier = JewelClassifier(template_dir=template_dir)
         if not self.classifier.has_templates():
@@ -71,18 +82,24 @@ class BingoBot:
                 "WARNING: no hay plantillas B/S/CR/H/L/C.png en assets/templates.\n"
                 "  Recalibra O corre: python tools/capture_jewel_templates.py --delay 8"
             )
-        self.board_reader = BoardReader(calibration, self.classifier)
-        self.draw_detector = DrawDetector(calibration, self.classifier)
-        self.marked_detector = MarkedCellDetector(calibration)
+        self.board_reader = BoardReader(self.vcal, self.classifier)
+        self.draw_detector = DrawDetector(self.vcal, self.classifier)
+        self.marked_detector = MarkedCellDetector(self.vcal)
         self.logger = GameLogger(log_dir)
         self.priors = JewelPriors.from_logs(log_dir)
         self.state = GameState.IDLE
         self.games_played = 0
         self._active: Optional[GameRecord] = None
         self._draws_done_offset = 0
+        self._frame_i = 0
 
     def frame(self) -> np.ndarray:
         return self.capture.grab()
+
+    def _gc_tick(self) -> None:
+        self._frame_i += 1
+        if self._frame_i % 40 == 0:
+            gc.collect(0)
 
     def stop(self) -> None:
         self.controller.request_stop()
@@ -185,7 +202,7 @@ class BingoBot:
         strong = [(rt, r, c) for rt, r, c in ratios if rt >= 0.22]
         soft = [(rt, r, c) for rt, r, c in ratios if rt >= 0.12]
 
-        ocr_left = read_remaining_draws(frame, self.cal.score_roi)
+        ocr_left = read_remaining_draws(frame, self.vcal.score_roi)
         by_strong = max(0, DRAWS_PER_GAME - len(strong))
 
         # User-provided remaining is authoritative (auto blue/OCR often wrong)
@@ -357,10 +374,11 @@ class BingoBot:
         print("Buscando cofre AZUL (no rojo)...")
         self.controller.wait(0.8)
         frame = self.frame()
-        blue = find_blue_chest_center(frame, self.cal)
+        blue = find_blue_chest_center(frame, self.vcal)
         if blue is not None:
-            print(f"  Cofre azul @ {blue}")
-            self.controller.click_xy_box(*blue)
+            abs_xy = (blue[0] + self._grab_ox, blue[1] + self._grab_oy)
+            print(f"  Cofre azul @ {abs_xy} (vision {blue})")
+            self.controller.click_xy_box(*abs_xy)
         else:
             print("  Vision falló — usando calibración boxes")
             self.controller.click_top_left_box()
@@ -389,6 +407,9 @@ class BingoBot:
             frames.append(self.frame())
             self.controller.wait(0.22)
         board, soft_known = self.board_reader.read_auto(frames)
+        frames.clear()
+        del frames
+        gc.collect(0)
         labeled = self.board_reader.labeled_count(board)
         print(f"  soft-known≈{soft_known}/24 → assigned {labeled}/24 (4× cada joya)")
         flat = [
@@ -555,7 +576,7 @@ class BingoBot:
             self.controller.wait(0.85)
 
         frame = self.frame()
-        ocr = read_total_score(frame, self.cal.score_roi)
+        ocr = read_total_score(frame, self.vcal.score_roi)
         computed = score_board(record.board)
         record.final_score = ocr if ocr is not None else computed
         record.target_met = record.final_score >= TARGET_SCORE
@@ -642,12 +663,13 @@ class BingoBot:
 
         # Fresh baselines AFTER focus (focus click can change UI slightly)
         frame_before = self.frame()
-        before_score = crop(frame_before, self.cal.score_roi).copy()
-        before_draw = crop(frame_before, self.cal.draw_jewel_roi).copy()
+        before_score = crop(frame_before, self.vcal.score_roi)
+        before_draw = crop(frame_before, self.vcal.draw_jewel_roi)
         before_cell = crop(
             frame_before,
             self.marked_detector._cells[cell[0]][cell[1]],
-        ).copy()
+        )
+        del frame_before
 
         self.controller.click_cell_mark(*cell)
         # Let GRD register click before parking cursor off the board
@@ -662,12 +684,13 @@ class BingoBot:
             if self.controller.stopped:
                 return False
             frame = self.frame()
-            cd = patch_delta(before_score, crop(frame, self.cal.score_roi))
-            dd = patch_delta(before_draw, crop(frame, self.cal.draw_jewel_roi))
+            cd = patch_delta(before_score, crop(frame, self.vcal.score_roi))
+            dd = patch_delta(before_draw, crop(frame, self.vcal.draw_jewel_roi))
             cell_d = patch_delta(
                 before_cell,
                 crop(frame, self.marked_detector._cells[cell[0]][cell[1]]),
             )
+            self._gc_tick()
             blue = self.marked_detector.cell_marked_blue(frame, *cell)
 
             if cd >= 1.0:
@@ -717,8 +740,8 @@ class BingoBot:
         self.controller.park_mouse()
         self.controller.wait(1.0)
         frame = self.frame()
-        dd = patch_delta(before_draw, crop(frame, self.cal.draw_jewel_roi))
-        cd = patch_delta(before_score, crop(frame, self.cal.score_roi))
+        dd = patch_delta(before_draw, crop(frame, self.vcal.draw_jewel_roi))
+        cd = patch_delta(before_score, crop(frame, self.vcal.score_roi))
         cell_d = patch_delta(
             before_cell,
             crop(frame, self.marked_detector._cells[cell[0]][cell[1]]),
@@ -746,6 +769,8 @@ class BingoBot:
         while time.time() < deadline and not self.controller.stopped:
             frame = self.frame()
             self.draw_detector.push(frame)
+            del frame
+            self._gc_tick()
             jewel = self.draw_detector.detect_from_board_blink(board)
             now = time.time()
             if now - last_log >= 1.5:

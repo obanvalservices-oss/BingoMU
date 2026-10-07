@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
 ERROR_LOG = ROOT / "panel_error.log"
 BUILD_LOG = ROOT / "panel_build.log"
 CAL_PATH = ROOT / "assets" / "calibration" / "default.json"
-PANEL_VERSION = "2026-10-07-v13"
+PANEL_VERSION = "2026-10-07-v14"
 
 # Mac dark window → titles must be white or they vanish.
 WHITE = "#ffffff"
@@ -397,6 +397,13 @@ class JewelBingoPanel(tk.Tk):
         def _do() -> None:
             try:
                 self.log.insert("end", text)
+                # Cap log size so the Text widget cannot grow without bound
+                try:
+                    lines = int(self.log.index("end-1c").split(".")[0])
+                    if lines > 800:
+                        self.log.delete("1.0", f"{lines - 600}.0")
+                except Exception:
+                    pass
                 self.log.see("end")
             except Exception:
                 pass

@@ -29,13 +29,14 @@ class DrawDetector:
         self,
         calibration: Calibration,
         classifier: Optional[JewelClassifier] = None,
-        history: int = 14,
+        history: int = 8,
         blink_threshold: float = 8.0,
         cell_blink_threshold: float = 3.5,
         margin_ratio: float = 1.08,
     ) -> None:
         self.cal = calibration
         self.classifier = classifier or JewelClassifier(min_score=0.04)
+        # Bounded deques only — full Retina frames must never accumulate here.
         self.history: deque[np.ndarray] = deque(maxlen=history)
         self.cell_bright: deque[np.ndarray] = deque(maxlen=history)
         self.cell_blue: deque[np.ndarray] = deque(maxlen=history)
@@ -48,6 +49,10 @@ class DrawDetector:
         self._last_conf: float = 0.0
         self._last_source: str = ""
         self._last_scores: dict[str, float] = {}
+        self._blue_lo = np.array([85, 40, 80], dtype=np.uint8)
+        self._blue_hi = np.array([140, 255, 255], dtype=np.uint8)
+        self._bright_lo = np.array([0, 0, 180], dtype=np.uint8)
+        self._bright_hi = np.array([179, 80, 255], dtype=np.uint8)
 
     def reset(self) -> None:
         self.history.clear()
@@ -80,18 +85,8 @@ class DrawDetector:
                 gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
                 bright[r, c] = float(gray.mean())
                 hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
-                # highlight / glow (cyan-blue) often used when a cell is selectable
-                mask = cv2.inRange(
-                    hsv,
-                    np.array([85, 40, 80], dtype=np.uint8),
-                    np.array([140, 255, 255], dtype=np.uint8),
-                )
-                # also bright yellow-white flash
-                bright_mask = cv2.inRange(
-                    hsv,
-                    np.array([0, 0, 180], dtype=np.uint8),
-                    np.array([179, 80, 255], dtype=np.uint8),
-                )
+                mask = cv2.inRange(hsv, self._blue_lo, self._blue_hi)
+                bright_mask = cv2.inRange(hsv, self._bright_lo, self._bright_hi)
                 total = float(patch.shape[0] * patch.shape[1] or 1)
                 blue[r, c] = (
                     cv2.countNonZero(mask) + 0.5 * cv2.countNonZero(bright_mask)
@@ -101,7 +96,9 @@ class DrawDetector:
     def push(self, frame: np.ndarray) -> None:
         roi = crop(frame, self.cal.draw_jewel_roi)
         if roi.size > 0:
-            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY).astype(np.float32)
+            # Tiny uint8 ROI for blink std — not full-res float32 frames
+            small = cv2.resize(roi, (32, 32), interpolation=cv2.INTER_AREA)
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
             self.history.append(gray)
             label = self.classifier.classify_draw_roi(roi)
             if label and label != "FREE" and label in JEWEL_TYPES:
