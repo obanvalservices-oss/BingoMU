@@ -93,16 +93,21 @@ class DrawDetector:
                 ) / total
         return bright, blue
 
-    def push(self, frame: np.ndarray) -> None:
+    def push(self, frame: np.ndarray, *, classify_roi: bool = True) -> None:
+        """
+        Update blink metrics. classify_roi=False skips expensive template match
+        (wait loop only needs board_blink).
+        """
         roi = crop(frame, self.cal.draw_jewel_roi)
         if roi.size > 0:
             # Tiny uint8 ROI for blink std — not full-res float32 frames
             small = cv2.resize(roi, (32, 32), interpolation=cv2.INTER_AREA)
             gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
             self.history.append(gray)
-            label = self.classifier.classify_draw_roi(roi)
-            if label and label != "FREE" and label in JEWEL_TYPES:
-                self.roi_labels.append(label)
+            if classify_roi:
+                label = self.classifier.classify_draw_roi(roi)
+                if label and label != "FREE" and label in JEWEL_TYPES:
+                    self.roi_labels.append(label)
 
         bright, blue = self._cell_metrics(frame)
         self.cell_bright.append(bright)

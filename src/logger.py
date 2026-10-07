@@ -64,7 +64,8 @@ def load_all_games(log_dir: str | Path = "logs") -> list[dict]:
                 if not line:
                     continue
                 obj = json.loads(line)
-                if "board" in obj:
+                # Real games have draws[]; board_read events also have "board"
+                if "draws" in obj and isinstance(obj.get("draws"), list):
                     games.append(obj)
     return games
 

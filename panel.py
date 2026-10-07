@@ -466,9 +466,9 @@ class JewelBingoPanel(tk.Tk):
             messagebox.showinfo("OK", "Patron valido")
 
     def _refresh_stats(self) -> None:
-        from src.history import history_summary, load_learned_priors, rebuild_learned_priors
+        from src.history import history_summary, load_learned_priors
 
-        rebuild_learned_priors()
+        # Prefer cached learned_priors.json (no full history rebuild on every open)
         n = load_learned_priors().get("games", 0)
         self.stats_var.set(f"{history_summary()} | priors n={n}")
 

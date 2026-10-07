@@ -76,25 +76,38 @@ def rebuild_learned_priors(
     out_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """
-    Build:
-      - overall jewel frequencies
-      - by_draw_index[i]: P(jewel | draw position i)
-      - transitions[prev][next]: P(next | prev)
+    Stream history.jsonl once (no giant list in RAM).
+    Build overall / by_draw_index / transitions priors.
     """
-    games = load_history(history_path)
+    p = Path(history_path) if history_path else DEFAULT_HISTORY_PATH
     overall: Counter[str] = Counter()
     by_idx: list[Counter[str]] = [Counter() for _ in range(DRAWS_PER_GAME)]
     trans: dict[str, Counter[str]] = {j: Counter() for j in JEWEL_TYPES}
+    n_games = 0
 
-    for g in games:
-        draws = [d for d in g.get("draws", []) if d in JEWEL_TYPES]
-        for i, j in enumerate(draws):
-            overall[j] += 1
-            if i < DRAWS_PER_GAME:
-                by_idx[i][j] += 1
-            if i > 0:
-                prev = draws[i - 1]
-                trans[prev][j] += 1
+    if p.exists():
+        with p.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                draws_raw = obj.get("draws")
+                if not isinstance(draws_raw, list):
+                    continue
+                draws = [d for d in draws_raw if d in JEWEL_TYPES]
+                if not draws:
+                    continue
+                n_games += 1
+                for i, j in enumerate(draws):
+                    overall[j] += 1
+                    if i < DRAWS_PER_GAME:
+                        by_idx[i][j] += 1
+                    if i > 0:
+                        trans[draws[i - 1]][j] += 1
 
     def norm_counter(c: Counter[str]) -> dict[str, float]:
         total = sum(c.values())
@@ -103,7 +116,7 @@ def rebuild_learned_priors(
         return {j: c.get(j, 0) / total for j in JEWEL_TYPES}
 
     learned = {
-        "games": len(games),
+        "games": n_games,
         "total_draws": int(sum(overall.values())),
         "overall": norm_counter(overall),
         "by_draw_index": [norm_counter(c) for c in by_idx],
@@ -127,21 +140,42 @@ def load_learned_priors(path: str | Path | None = None) -> dict[str, Any]:
 
 
 def history_summary(path: str | Path | None = None) -> str:
-    games = load_history(path)
-    if not games:
+    """One-pass summary — does not keep all games in memory."""
+    p = Path(path) if path else DEFAULT_HISTORY_PATH
+    if not p.exists():
         return "Sin historial aún."
-    scores = [int(g.get("final_score") or 0) for g in games]
-    hits = sum(1 for g in games if g.get("target_met"))
-    modes = Counter(g.get("placement_mode", "?") for g in games)
-    avg = sum(scores) / len(scores)
-    last = games[-1]
-    last_draws = " → ".join(last.get("draws", [])[:8])
-    if len(last.get("draws", [])) > 8:
-        last_draws += "…"
+    n = 0
+    score_sum = 0
+    hits = 0
+    modes: Counter[str] = Counter()
+    last_draws: list[str] = []
+    with p.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "draws" not in obj:
+                continue
+            n += 1
+            score_sum += int(obj.get("final_score") or 0)
+            if obj.get("target_met"):
+                hits += 1
+            modes[obj.get("placement_mode", "?")] += 1
+            last_draws = list(obj.get("draws") or [])
+    if n == 0:
+        return "Sin historial aún."
+    avg = score_sum / n
+    seq = " → ".join(last_draws[:8])
+    if len(last_draws) > 8:
+        seq += "…"
     return (
-        f"Partidas: {len(games)} | ≥1000: {hits} ({100*hits/len(games):.0f}%) | "
+        f"Partidas: {n} | ≥1000: {hits} ({100 * hits / n:.0f}%) | "
         f"avg score: {avg:.0f} | modes: {dict(modes)}\n"
-        f"Última secuencia: {last_draws}"
+        f"Última secuencia: {seq}"
     )
 
 

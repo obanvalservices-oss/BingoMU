@@ -45,8 +45,11 @@ class JewelPriors:
     def from_logs(cls, log_dir: str = "logs") -> "JewelPriors":
         from ..history import load_learned_priors
 
+        # Prefer compact learned_priors.json — avoid loading all games_*.jsonl
         learned = load_learned_priors()
-        overall = learned.get("overall") or empirical_jewel_priors(log_dir)
+        overall = learned.get("overall")
+        if not overall:
+            overall = empirical_jewel_priors(log_dir)
         return cls(probs=dict(overall), learned=learned)
 
     def sample(self, rng: random.Random, draw_index: int = 0, prev: str | None = None) -> str:

@@ -768,7 +768,8 @@ class BingoBot:
         stuck_since: Optional[float] = None
         while time.time() < deadline and not self.controller.stopped:
             frame = self.frame()
-            self.draw_detector.push(frame)
+            # Board-blink only — skip ROI template classify every 100ms (RAM/CPU)
+            self.draw_detector.push(frame, classify_roi=False)
             del frame
             self._gc_tick()
             jewel = self.draw_detector.detect_from_board_blink(board)
