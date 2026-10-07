@@ -26,7 +26,7 @@ if str(ROOT) not in sys.path:
 
 ERROR_LOG = ROOT / "panel_error.log"
 CAL_PATH = ROOT / "assets" / "calibration" / "default.json"
-PANEL_VERSION = "2026-10-07-v3"
+PANEL_VERSION = "2026-10-07-v4"
 
 # Stark palette — must be obvious on Mac
 WIN_BG = "#1e1e1e"
@@ -200,8 +200,15 @@ class JewelBingoPanel(tk.Tk):
             head, text="JewelBingo", bg=WIN_BG, fg=TEXT_LIGHT,
             font=("Arial", 26, "bold"),
         ).pack(side=tk.LEFT)
+        # Giant version strip — if you don't see this, git pull failed
         tk.Label(
-            head, text=PANEL_VERSION, bg=WIN_BG, fg="#888888", font=("Arial", 10),
+            head,
+            text=f"  UI {PANEL_VERSION}  ",
+            bg=ORANGE,
+            fg=TEXT,
+            font=("Arial", 12, "bold"),
+            padx=8,
+            pady=4,
         ).pack(side=tk.LEFT, padx=12)
         self.status_lbl = tk.Label(
             head, text="● LISTO", bg=WIN_BG, fg=GREEN, font=("Arial", 14, "bold"),
