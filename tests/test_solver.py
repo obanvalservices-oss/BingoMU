@@ -122,9 +122,29 @@ class TestSolver(unittest.TestCase):
     def test_center_first_life_prefers_diagonal(self):
         """L center-line cells are anti-diag R2C4 and main-diag R5C5 — never peripheral."""
         b = chatgpt_board()
-        cell, _, _ = choose_heuristic(b, "L")
+        cell, _, _ = choose_heuristic(b, "L", draws_remaining_after=12)
         self.assertIn(cell, {(1, 3), (4, 4)})  # center lines only
         self.assertNotIn(cell, {(0, 3), (3, 4)})  # peripheral L
+
+    def test_skips_infeasible_center_for_completable_edge(self):
+        """
+        If center line cannot finish with draws left, but a non-center line
+        can complete now, pick the scoring edge line.
+        """
+        layout = [
+            ["S", "H", "CR", "L", "B"],
+            ["H", "C", "L", "C", "CR"],
+            ["S", "H", "FREE", "B", "L"],
+            ["C", "CR", "S", "H", "CR"],
+            ["L", "C", "CR", "S", "H"],
+        ]
+        b = make_board(layout)
+        for c in range(4):
+            b.mark(0, c)
+        # Center row still needs 3 after marking B@(2,3); draws_after=1 → infeasible.
+        # B@(0,4) completes row0 now → must pick edge.
+        cell, _, _ = choose_heuristic(b, "B", draws_remaining_after=1)
+        self.assertEqual(cell, (0, 4))
 
     def test_target_constant(self):
         self.assertEqual(TARGET_SCORE, 1000)
